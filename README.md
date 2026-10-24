@@ -316,6 +316,11 @@ without it Record and Go live say "ffmpeg was not found" (see
 
 To ship the app, copy `ui.exe`, `assets\` and the `out.*` files into one
 folder; it also searches next to the exe and up to four folders above it.
+The Windows zip (CI's `seraphina-studio-windows` artifact and the release
+zip) is built from one list, `packaging/windows/zip-files.txt`, by
+`packaging/windows/stage.ps1`. Everything sits at the zip root:
+`SeraphinaStudio.exe` (the renamed `ui.exe`) with `README.txt`, `LICENSE`,
+`SOURCE.txt`, `assets\`, `scripts\` and the `out.*` samples next to it.
 Release builds use the GUI subsystem, so no console window opens.
 
 **Unverified on Windows from the dev box:** these steps have not been run
@@ -381,8 +386,13 @@ missing; they never pass silently.
   checks a nonexistent source stops the recording with an error. Both need
   ffmpeg; the first also needs a PulseAudio server (`pulseaudio --start`).
   Each fails, rather than passes, when what it needs is missing.
+* **pwsh** (PowerShell 7, or `SERAPHINA_PWSH`) is required on Linux by
+  `stage_script_puts_every_listed_file_at_the_top`: it runs
+  `packaging/windows/stage.ps1` as the workflows do and checks every
+  `zip-files.txt` entry lands at the top of the staged folder. Under Wine it
+  is ignored with the reason; the `windows-ui` CI job runs the script.
 
-On Windows (and under Wine) the ffmpeg and mediamtx tests are reported as
+On Windows (and under Wine) the ffmpeg, mediamtx and pwsh tests are reported as
 ignored with the reason. Every other opt-in test is `#[ignore]` with its
 reason in the attribute, and fails if what it needs is missing:
 

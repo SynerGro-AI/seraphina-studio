@@ -13,7 +13,10 @@ FILES IN THIS FOLDER
 --------------------
   SeraphinaStudio.exe   the app
   README.txt            this file
+  LICENSE               the GNU GPL, version 2 (the app's licence)
+  SOURCE.txt            where to get this build's source, and how to build it
   assets\               sample images Paint and Composite open
+  scripts\              sample Seraphina scripts (.jsonl)
   out.obsr              the recording Stream mode opens at startup
   out.h264              the default file in Stream mode's Open box
 

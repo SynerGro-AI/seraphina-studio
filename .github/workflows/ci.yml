@@ -100,17 +100,21 @@ jobs:
       # ui_canvas::save_target, which depends on Windows path rules).
       # ffmpeg and mediamtx tests are #[ignore]d on Windows (with the reason).
       - run: cargo test --locked --lib --bins
-      - run: copy target\release\ui.exe SeraphinaStudio.exe
-        shell: cmd
+      # packaging/windows/zip-files.txt lists the zip's files; stage.ps1
+      # copies them to the top of pkg/, and uploading that one folder puts
+      # its contents at the zip root, so README.txt, LICENSE and SOURCE.txt
+      # sit next to SeraphinaStudio.exe (the release zip uses the same
+      # script). Listing files from several folders here would root the zip
+      # at their common parent instead (packaging/windows/README.txt).
+      - run: >-
+          ./packaging/windows/stage.ps1 -Dest pkg -Exe target/release/ui.exe
+          -Ref "${{ github.ref_name }}" -Sha "${{ github.sha }}" -Repo "${{ github.repository }}"
+        shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
           name: seraphina-studio-windows
-          path: |
-            SeraphinaStudio.exe
-            packaging/windows/README.txt
-            assets/
-            out.h264
-            out.obsr
+          path: pkg/
+          if-no-files-found: error
 
   msrv:
     # rust-version in Cargo.toml: the oldest toolchain the locked

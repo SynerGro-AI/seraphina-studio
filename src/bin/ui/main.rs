@@ -3514,12 +3514,13 @@ mod tests {
     use egui::Pos2;
     use std::sync::Arc;
 
-    /// The release zip ships out.obsr and out.h264 next to
+    /// The Windows zip ships out.obsr and out.h264 next to
     /// SeraphinaStudio.exe: Stream mode opens out.obsr at startup and
     /// out.h264 is the default path in its Open box. Every file the Open
-    /// hint names must ship too. In-repo zip lists: the windows-ui artifact
-    /// in ci.yml and packaging/windows/README.txt. Unzipped anywhere and
-    /// started from another folder, each must resolve next to the exe.
+    /// hint names must ship too. In-repo zip lists:
+    /// packaging/windows/zip-files.txt (what the workflows stage) and
+    /// packaging/windows/README.txt. Unzipped anywhere and started from
+    /// another folder, each must resolve next to the exe.
     #[test]
     fn stream_samples_resolve_next_to_the_exe_in_the_zip_layout() {
         let hinted = stream::files_named_in(stream::OPEN_HINT);
@@ -3531,12 +3532,12 @@ mod tests {
                 .filter(|n| !names.contains(n))
                 .collect::<Vec<_>>(),
         );
-        let ci = include_str!("../../../.github/workflows/ci.yml");
         let readme = include_str!("../../../packaging/windows/README.txt");
+        let zip = zip_files();
         for name in &names {
             assert!(
-                ci.lines().any(|l| l.trim() == *name),
-                "{name} is used or named by Stream mode but not in ci.yml's windows-ui artifact"
+                zip.iter().any(|(to, from)| to == name && from == name),
+                "{name} is used or named by Stream mode but packaging/windows/zip-files.txt does not ship it"
             );
             assert!(
                 lists_file(readme, name),
@@ -3560,6 +3561,243 @@ mod tests {
             let found = resolve_asset_from(&unique, Some(exe.clone()));
             assert_eq!(found, app.join(&unique), "{name} not found next to the exe");
             assert!(std::fs::metadata(&found).unwrap().len() > 0);
+        }
+    }
+
+    /// packaging/windows/zip-files.txt as (path in zip, from).
+    fn zip_files() -> Vec<(&'static str, &'static str)> {
+        include_str!("../../../packaging/windows/zip-files.txt")
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                assert_eq!(f.len(), 2, "zip-files.txt: {l}");
+                (f[0], f[1])
+            })
+            .collect()
+    }
+
+    /// The entries at the top of the zip an `actions/upload-artifact`
+    /// step makes from its `path:` lines. The action roots the zip at the
+    /// paths' deepest common folder (a lone folder is its own root), so
+    /// files listed from several folders keep their folders. `staged` is
+    /// the folder stage.ps1 fills and what it puts there.
+    fn artifact_entries(paths: &[&str], staged: Option<(&str, &[&str])>) -> Vec<String> {
+        let norm = |p: &str| p.trim_start_matches("./").trim_end_matches('/').to_string();
+        let is_dir = |p: &str| p.ends_with('/') || staged.is_some_and(|(d, _)| norm(d) == norm(p));
+        let dirs: Vec<Vec<String>> = paths
+            .iter()
+            .map(|p| {
+                let mut c: Vec<String> = norm(p).split('/').map(String::from).collect();
+                if !is_dir(p) {
+                    c.pop();
+                }
+                c
+            })
+            .collect();
+        let mut root = dirs.first().cloned().unwrap_or_default();
+        for d in &dirs {
+            let n = root.iter().zip(d).take_while(|(a, b)| a == b).count();
+            root.truncate(n);
+        }
+        let mut out = Vec::new();
+        for p in paths {
+            let rel: Vec<String> = norm(p)
+                .split('/')
+                .skip(root.len())
+                .map(String::from)
+                .collect();
+            let rel = rel.join("/");
+            match staged {
+                Some((d, inside)) if norm(d) == norm(p) => out.extend(inside.iter().map(|e| {
+                    if rel.is_empty() {
+                        e.to_string()
+                    } else {
+                        format!("{rel}/{e}")
+                    }
+                })),
+                _ if is_dir(p) => out.push(format!("{rel}/")),
+                _ => out.push(rel),
+            }
+        }
+        out
+    }
+
+    /// What ci.yml's windows-ui job uploads: the `path:` lines of its
+    /// upload-artifact step and the `-Dest` folder it runs stage.ps1 into.
+    fn ci_artifact(ci: &str) -> (Vec<&str>, Option<&str>) {
+        let job: Vec<&str> = ci
+            .lines()
+            .skip_while(|l| *l != "  windows-ui:")
+            .skip(1)
+            .take_while(|l| l.is_empty() || l.starts_with("   "))
+            .collect();
+        assert!(!job.is_empty(), "ci.yml has no windows-ui job");
+        let dest = job.iter().position(|l| l.contains("stage.ps1")).map(|i| {
+            let mut w = job[i..].iter().flat_map(|l| l.split_whitespace());
+            w.find(|t| *t == "-Dest");
+            w.next().expect("stage.ps1 -Dest needs a folder")
+        });
+        let up = job
+            .iter()
+            .position(|l| l.contains("uses: actions/upload-artifact"))
+            .expect("windows-ui has no upload-artifact step");
+        let at = up
+            + job[up..]
+                .iter()
+                .position(|l| l.trim_start().starts_with("path:"))
+                .expect("upload-artifact has no path");
+        let first = job[at].trim_start().trim_start_matches("path:").trim();
+        let paths = if first == "|" {
+            let indent = job[at + 1].len() - job[at + 1].trim_start().len();
+            job[at + 1..]
+                .iter()
+                .take_while(|l| l.len() - l.trim_start().len() >= indent && !l.trim().is_empty())
+                .map(|l| l.trim())
+                .collect()
+        } else {
+            vec![first]
+        };
+        (paths, dest)
+    }
+
+    #[test]
+    fn artifact_entries_root_the_zip_at_the_common_folder() {
+        assert_eq!(
+            artifact_entries(
+                &["App.exe", "packaging/windows/README.txt", "assets/"],
+                None
+            ),
+            ["App.exe", "packaging/windows/README.txt", "assets/"]
+        );
+        assert_eq!(
+            artifact_entries(&["x/a.txt", "x/b/c.txt"], None),
+            ["a.txt", "b/c.txt"]
+        );
+        let inside: &[&str] = &["App.exe", "README.txt"];
+        assert_eq!(
+            artifact_entries(&["pkg/"], Some(("pkg", inside))),
+            ["App.exe", "README.txt"]
+        );
+        assert_eq!(
+            artifact_entries(&["pkg", "LICENSE"], Some(("pkg", inside))),
+            ["pkg/App.exe", "pkg/README.txt", "LICENSE"]
+        );
+    }
+
+    /// README.txt, LICENSE and SOURCE.txt sit next to the exe at the top
+    /// of the windows-ui artifact zip, as packaging/windows/zip-files.txt
+    /// says; README.txt's FILES IN THIS FOLDER lists exactly those entries.
+    #[test]
+    fn ci_artifact_puts_the_docs_next_to_the_exe() {
+        let zip = zip_files();
+        let inside: Vec<&str> = zip.iter().map(|(to, _)| *to).collect();
+        let (paths, dest) = ci_artifact(include_str!("../../../.github/workflows/ci.yml"));
+        let entries = artifact_entries(&paths, dest.map(|d| (d, &inside[..])));
+        for need in ["SeraphinaStudio.exe", "README.txt", "LICENSE", "SOURCE.txt"] {
+            assert!(
+                inside.contains(&need),
+                "packaging/windows/zip-files.txt does not ship {need}"
+            );
+        }
+        for e in &inside {
+            assert!(
+                entries.iter().any(|x| x == e),
+                "the windows-ui artifact has no {e} at its root; it has {entries:?}"
+            );
+        }
+        let readme = include_str!("../../../packaging/windows/README.txt");
+        for e in &inside {
+            assert!(
+                lists_file(readme, &e.replace('/', "\\")),
+                "README.txt's FILES IN THIS FOLDER does not list {e}"
+            );
+        }
+        let listed = readme
+            .lines()
+            .skip_while(|l| l.trim() != "FILES IN THIS FOLDER")
+            .skip(2)
+            .take_while(|l| !l.trim().is_empty())
+            .filter_map(|l| l.split_whitespace().next())
+            .count();
+        assert_eq!(listed, inside.len(), "README.txt lists files the zip lacks");
+    }
+
+    /// Runs packaging/windows/stage.ps1, as both workflows do, and checks
+    /// the folder that becomes the zip root.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Wine has no pwsh; the windows-ui CI job runs stage.ps1 itself"
+    )]
+    fn stage_script_puts_every_listed_file_at_the_top() {
+        let pwsh = std::env::var("SERAPHINA_PWSH").unwrap_or_else(|_| "pwsh".into());
+        let dir = crate::test_dir::TestDir::new("stage");
+        let dest = dir.path().join("pkg");
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(&pwsh)
+            .args([
+                "-NoProfile",
+                "-File",
+                "packaging/windows/stage.ps1",
+                "-Dest",
+            ])
+            .arg(&dest)
+            .arg("-Exe")
+            .arg(&exe)
+            .args([
+                "-Ref",
+                "test",
+                "-Sha",
+                "0123abc",
+                "-Repo",
+                "SynerGro-AI/seraphina-studio",
+            ])
+            .output()
+            .unwrap_or_else(|e| {
+                panic!("can't run {pwsh} ({e}): install PowerShell 7 or set SERAPHINA_PWSH")
+            });
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut top: Vec<String> = std::fs::read_dir(&dest)
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                let n = e.file_name().into_string().unwrap();
+                if e.path().is_dir() {
+                    format!("{n}/")
+                } else {
+                    n
+                }
+            })
+            .collect();
+        top.sort();
+        let mut want: Vec<String> = zip_files().iter().map(|(to, _)| to.to_string()).collect();
+        want.sort();
+        assert_eq!(top, want);
+        assert_eq!(
+            std::fs::read(dest.join("SeraphinaStudio.exe")).unwrap(),
+            std::fs::read(&exe).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(dest.join("README.txt")).unwrap(),
+            std::fs::read("packaging/windows/README.txt").unwrap()
+        );
+        let source = std::fs::read_to_string(dest.join("SOURCE.txt")).unwrap();
+        assert!(
+            source.contains("tree/0123abc") && source.contains("cd seraphina-studio"),
+            "{source}"
+        );
+        assert!(!source.contains("{{"), "{source}");
+        for (to, _) in zip_files().iter().filter(|(to, _)| to.ends_with('/')) {
+            assert!(
+                std::fs::read_dir(dest.join(to)).unwrap().count() > 0,
+                "{to} is empty"
+            );
         }
     }
 
