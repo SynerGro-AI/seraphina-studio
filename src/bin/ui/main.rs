@@ -4457,8 +4457,8 @@ mod tests {
             }
             !c
         }
-        let dir = std::env::temp_dir().join(format!("seraphina-mp-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = crate::test_dir::TestDir::new("mp");
+        let dir = tmp.path();
         // a PNG header claiming 20000×20000 (400 MP) and no pixel data
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         let mut ihdr = b"IHDR".to_vec();
@@ -4517,7 +4517,7 @@ mod tests {
             crate::paint::check_open_size(16384, 8192).is_err()
                 == (16384u64 * 8192 > crate::paint::max_megapixels() * 1_000_000)
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -5308,9 +5308,8 @@ mod tests {
     fn psd_save_roundtrips_through_open() {
         let ctx = egui::Context::default();
         let mut app = app_with(&ctx, None);
-        let dir = std::env::temp_dir().join(format!("seraphina_psd_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("rt.psd");
+        let tmp = crate::test_dir::TestDir::new("psd");
+        let path = tmp.path().join("rt.psd");
         let before = app.paint.flattened();
         app.paint.to_psd().save(&path).unwrap();
         app.dispatch(
@@ -5329,7 +5328,7 @@ mod tests {
             .sum::<f64>()
             / before.data.len() as f64;
         assert!(diff < 1.5, "mean diff {}", diff);
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 
     #[test]

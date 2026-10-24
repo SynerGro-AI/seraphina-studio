@@ -63,6 +63,7 @@ pub fn fail_late() {
 /// Every test that writes into temp, as named by the test harness.
 #[cfg(target_os = "linux")]
 const TESTS_USING_TEMP: &[&str] = &[
+    "crash::tests::reports_are_written_listed_and_marked_seen",
     "output::tests::a_missing_audio_device_fails_loudly",
     "output::tests::camera_failure_stops_the_recording_with_a_reason",
     "output::tests::camera_source_records_the_camera_picture",
@@ -75,10 +76,17 @@ const TESTS_USING_TEMP: &[&str] = &[
     "prefs::tests::corrupt_output_settings_are_preserved",
     "prefs::tests::corrupt_prefs_file_is_preserved_and_reported",
     "prefs::tests::missing_or_valid_prefs_load_quietly",
+    "prefs::tests::persists_to_json",
     "project::tests::atomic_write_survives_an_interrupted_write",
     "project::tests::session_marker_detects_a_crash",
+    "secrets::tests::file_store_roundtrip_and_clear",
     "tests::a_damaged_learning_bank_is_announced_at_startup",
     "tests::a_fresh_launch_is_not_marked_unsaved",
+    "tests::opening_an_image_over_the_megapixel_cap_is_refused_with_a_message",
+    "tests::psd_save_roundtrips_through_open",
+    "usage::tests::ledger_survives_a_restart",
+    "videogen::tests::concat_runs_off_thread",
+    "videogen::tests::stitch_names_never_overwrite",
     "workspace::tests::a_bad_file_leaves_the_workspace_alone",
     "workspace::tests::a_relative_name_saves_and_opens_in_documents",
     "workspace::tests::animate_round_trips_losslessly",

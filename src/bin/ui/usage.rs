@@ -414,9 +414,8 @@ mod tests {
 
     #[test]
     fn ledger_survives_a_restart() {
-        let dir = std::env::temp_dir().join(format!("seraphina-usage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("usage.json");
+        let tmp = crate::test_dir::TestDir::new("usage");
+        let path = tmp.path().join("usage.json");
         let mut m = Meter::with(Some(path.clone()), Ledger::default(), 1.0);
         m.record(&Usage {
             ticks: ticks(1.5),
@@ -427,6 +426,6 @@ mod tests {
         assert!((again.last_24h_usd() - 1.5).abs() < 1e-9);
         assert!(again.check(0.0).is_err());
         assert_eq!(again.session, Totals::default(), "session starts at zero");
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 }

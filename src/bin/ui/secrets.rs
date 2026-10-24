@@ -317,17 +317,11 @@ mod vault {
 mod tests {
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d =
-            std::env::temp_dir().join(format!("seraphina-secrets-{}-{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
-
     #[test]
     fn file_store_roundtrip_and_clear() {
-        let d = tmp("file");
-        let s = Store::at(&d, "SeraphinaStudioTest", false);
+        let tmp = crate::test_dir::TestDir::new("secrets-file");
+        let d = tmp.path();
+        let s = Store::at(d, "SeraphinaStudioTest", false);
         assert_eq!(s.load(Secret::StreamKey), "");
         assert_eq!(s.save(Secret::StreamKey, "  live_abc  \n"), Ok(Where::File));
         assert_eq!(s.load(Secret::StreamKey), "live_abc");
@@ -347,7 +341,7 @@ mod tests {
         s.save(Secret::XaiKey, "xai-test").unwrap();
         assert_eq!(s.load(Secret::StreamKey), "");
         assert_eq!(s.load(Secret::XaiKey), "xai-test");
-        let _ = std::fs::remove_dir_all(&d);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -386,10 +380,11 @@ mod tests {
         ignore = "Windows Credential Manager only (runs under Wine)"
     )]
     fn vault_store_migrates_plaintext_file() {
-        let d = tmp("vault");
+        let tmp = crate::test_dir::TestDir::new("secrets-vault");
+        let d = tmp.path();
         let prefix = format!("SeraphinaStudioTest{}", std::process::id());
-        let s = Store::at(&d, &prefix, true);
-        write_private(&d, &d.join("stream_key"), "live_old").unwrap();
+        let s = Store::at(d, &prefix, true);
+        write_private(d, &d.join("stream_key"), "live_old").unwrap();
         assert_eq!(s.load(Secret::StreamKey), "live_old");
         assert!(!d.join("stream_key").exists(), "plaintext file migrated");
         assert_eq!(s.location(Secret::StreamKey), Where::CredentialManager);
@@ -400,6 +395,6 @@ mod tests {
         assert_eq!(s.load(Secret::StreamKey), "live_new");
         s.clear(Secret::StreamKey);
         assert_eq!(s.location(Secret::StreamKey), Where::None);
-        let _ = std::fs::remove_dir_all(&d);
+        crate::test_dir::fail_late();
     }
 }

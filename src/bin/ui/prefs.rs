@@ -295,9 +295,8 @@ mod tests {
 
     #[test]
     fn persists_to_json() {
-        let dir = std::env::temp_dir().join(format!("seraphina-prefs-{}", std::process::id()));
-        let path = dir.join("bank.json");
-        let _ = std::fs::remove_file(&path);
+        let tmp = crate::test_dir::TestDir::new("prefs-json");
+        let path = tmp.path().join("bank.json");
         {
             let mut p = Prefs::load(path.clone());
             p.feedback(true);
@@ -306,6 +305,6 @@ mod tests {
         let p = Prefs::load(path.clone());
         assert_eq!(p.bank.updates, 1);
         assert_eq!(p.bank.weights.get("reply.helpfulness"), Some(&1.0));
-        let _ = std::fs::remove_dir_all(dir);
+        crate::test_dir::fail_late();
     }
 }

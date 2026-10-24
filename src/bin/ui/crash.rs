@@ -420,10 +420,10 @@ mod tests {
 
     #[test]
     fn reports_are_written_listed_and_marked_seen() {
-        let dir = std::env::temp_dir().join(format!("seraphina-crash-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp = crate::test_dir::TestDir::new("crash");
+        let dir = tmp.path();
         let p = write_report_in(
-            &dir,
+            dir,
             "crash",
             "Panic: boom xai-SECRETSECRET123",
             "Backtrace:\n…",
@@ -431,17 +431,17 @@ mod tests {
         .unwrap();
         let body = std::fs::read_to_string(&p).unwrap();
         assert!(body.contains("Panic: boom") && !body.contains("SECRETSECRET"));
-        write_report_in(&dir, "gpu", "Panic while starting the renderer: x", "").unwrap();
-        let un = unseen_in(&dir);
+        write_report_in(dir, "gpu", "Panic while starting the renderer: x", "").unwrap();
+        let un = unseen_in(dir);
         assert_eq!(un, vec![p.clone()], "gpu-* reports are not crash notices");
         mark_seen(&un);
-        assert!(unseen_in(&dir).is_empty());
+        assert!(unseen_in(dir).is_empty());
         assert!(p.with_extension("seen.txt").exists());
         for i in 0..(KEEP + 5) {
             std::fs::write(dir.join(format!("crash-0000-{:03}.seen.txt", i)), "x").unwrap();
         }
-        prune(&dir);
-        assert_eq!(list(&dir, |_| true).len(), KEEP);
-        let _ = std::fs::remove_dir_all(&dir);
+        prune(dir);
+        assert_eq!(list(dir, |_| true).len(), KEEP);
+        crate::test_dir::fail_late();
     }
 }

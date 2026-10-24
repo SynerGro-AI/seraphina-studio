@@ -1157,9 +1157,8 @@ mod tests {
     fn concat_runs_off_thread() {
         let ff = crate::output::find_ffmpeg()
             .expect("concat_runs_off_thread needs ffmpeg (on PATH or SERAPHINA_FFMPEG)");
-        let dir = std::env::temp_dir().join(format!("seraphina-concat-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = crate::test_dir::TestDir::new("concat");
+        let dir = tmp.path();
         let mut body = String::new();
         for i in 0..2 {
             let f = dir.join(format!("c{}.mp4", i));
@@ -1174,7 +1173,7 @@ mod tests {
             assert!(ok, "ffmpeg could not make test clip {}", f.display());
             body.push_str(&format!("file '{}'\n", f.display()));
         }
-        let out = stitch_target(&dir, "t");
+        let out = stitch_target(dir, "t");
         let list = out.with_extension("txt");
         std::fs::write(&list, body).unwrap();
         let (o2, l2) = (out.clone(), list.clone());
@@ -1187,21 +1186,20 @@ mod tests {
         );
         assert!(out.exists() && !list.exists());
         // A second run never overwrites.
-        assert_ne!(stitch_target(&dir, "t"), out);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_ne!(stitch_target(dir, "t"), out);
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn stitch_names_never_overwrite() {
-        let dir = std::env::temp_dir().join(format!("seraphina-stitch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = stitch_target(&dir, "2026-10-24_00-00-00Z");
+        let tmp = crate::test_dir::TestDir::new("stitch");
+        let dir = tmp.path();
+        let a = stitch_target(dir, "2026-10-24_00-00-00Z");
         assert!(a.ends_with("stitched_2026-10-24_00-00-00Z.mp4"));
         std::fs::write(&a, b"x").unwrap();
-        let b = stitch_target(&dir, "2026-10-24_00-00-00Z");
+        let b = stitch_target(dir, "2026-10-24_00-00-00Z");
         assert!(b.ends_with("stitched_2026-10-24_00-00-00Z_2.mp4"));
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 
     /// Live, billed: run explicitly with `cargo test --bin ui -- --ignored live_imagine`.
