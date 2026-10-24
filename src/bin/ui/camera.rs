@@ -704,7 +704,7 @@ pub(crate) mod v4l2 {
     }
 
     /// [`list`] over the `videoN` nodes in `dir`, every node accounted for.
-    pub(super) fn list_in(dir: &std::path::Path) -> Result<Listing, CameraError> {
+    pub(crate) fn list_in(dir: &std::path::Path) -> Result<Listing, CameraError> {
         let mut nodes: Vec<(u32, String)> = std::fs::read_dir(dir)
             .map_err(|e| format!("can't read {}: {e}", dir.display()))?
             .filter_map(|e| {

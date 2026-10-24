@@ -254,7 +254,9 @@ camera opens. While a camera is already held open (preview, recording or
 stream) no test open runs, so a scan that names no blocked node (it was
 approved, or unplugged) ends Approve, the reason and the rechecks, with the
 same "approved" message. With one camera usable and another blocked,
-opening the usable one doesn't count as approved. macOS: planned with AVFoundation. Tests:
+opening the usable one doesn't count as approved, and an open counts only
+after a scan that succeeded (not before the first scan, nor after a failed
+one). macOS: planned with AVFoundation. Tests:
 `v4l2_list_reports_a_node_it_is_not_allowed_to_open` (a real mode-000 node
 is blocked, an empty folder is "no camera"),
 `v4l2_list_shows_usable_and_blocked_cameras_together` and
@@ -270,7 +272,9 @@ if privileges can't be dropped; they never skip,
 `opening_a_usable_camera_keeps_approve_while_another_is_blocked`,
 `a_held_camera_lifts_the_block_once_the_blocked_node_is_approved_or_unplugged`
 (a real mode-000 node opened up or deleted, rescanned with the real probe,
-while a real Feed is held open).
+while a real Feed is held open),
+`opening_a_camera_approves_only_after_a_successful_scan` (the failed scan
+is the real V4L2 scan of a missing folder).
 
 Encoding is
 libx264 (veryfast, zerolatency) + AAC (silent track by default); recordings are

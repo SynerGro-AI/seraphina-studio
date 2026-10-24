@@ -1416,17 +1416,17 @@ impl Output {
     }
 
     /// Use a camera that just opened. Blocked access counts as approved
-    /// only when the last scan names no blocked node: with one camera usable
-    /// and another still blocked, Approve and the reasons stay.
+    /// only when the last scan succeeded and names no blocked node: with one
+    /// camera usable and another still blocked, Approve and the reasons
+    /// stay, and with no scan yet (or a failed one) nothing proves the
+    /// blocked node is usable now, so the block stands until a scan does.
     fn adopt_camera(&mut self, feed: crate::camera::Feed) -> FrameSlot {
-        let still_blocked = match &self.cameras {
-            Some(Ok(l)) => l.blocked_why(),
-            _ => None,
-        };
-        if let Some(why) = still_blocked {
-            self.camera_blocked = Some(why);
-        } else if self.camera_blocked.take().is_some() {
-            self.camera_approved();
+        if let Some(Ok(l)) = &self.cameras {
+            if let Some(why) = l.blocked_why() {
+                self.camera_blocked = Some(why);
+            } else if self.camera_blocked.take().is_some() {
+                self.camera_approved();
+            }
         }
         self.camera.insert(feed).frames.clone()
     }
@@ -3089,6 +3089,78 @@ mod tests {
         o.adopt_camera(recorded_camera(None));
         assert_eq!(o.camera_blocked, None);
         assert!(approved(&o), "{:?}", o.events);
+        crate::test_dir::fail_late();
+    }
+
+    /// Opening a camera says "approved" only after a successful scan that
+    /// names no blocked node: not before any scan, not after a failed one.
+    /// The block comes from a real refused open of a mode-000 node; the failed scan
+    /// is the real V4L2 scan of a folder that doesn't exist; the camera that
+    /// opens is a real Feed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn opening_a_camera_approves_only_after_a_successful_scan() {
+        use crate::camera::tests::{blocked_why, locked_node, mixed_listing, rerun_as_nobody};
+        if rerun_as_nobody("output::tests::opening_a_camera_approves_only_after_a_successful_scan")
+        {
+            return;
+        }
+        let dir = crate::test_dir::TestDir::new("output_scan_first");
+        let locked = locked_node(&dir, "video2");
+        let mut o = Output::new(
+            OutputConfig {
+                source: Source::Camera,
+                ..Default::default()
+            },
+            String::new(),
+        );
+        // the real open of the node is refused; camera_frames keeps that
+        // reason the same way when Feed::start is refused
+        let why = blocked_why(&locked);
+        let refused = crate::camera::v4l2::probe(&locked.to_string_lossy());
+        assert_eq!(
+            refused,
+            Err(crate::camera::CameraError::Blocked(why.clone()))
+        );
+        if let Err(crate::camera::CameraError::Blocked(m)) = refused {
+            o.camera_blocked = Some(m);
+        }
+        assert!(o.cameras.is_none(), "no scan has run");
+        let approved = |o: &Output| {
+            o.events
+                .iter()
+                .any(|(k, m)| *k == ToastKind::Success && m.contains("approved"))
+        };
+        o.camera_fix_shown = true;
+        // no scan yet
+        o.adopt_camera(recorded_camera(None));
+        assert_eq!(o.camera_blocked, Some(why.clone()), "no scan yet");
+        assert!(!approved(&o), "{:?}", o.events);
+        assert!(o.camera_fix_shown);
+        o.release_camera();
+        // a scan that failed
+        let missing = dir.path().join("no-such-dev");
+        let failed = crate::camera::v4l2::list_in(&missing);
+        assert!(
+            matches!(&failed, Err(crate::camera::CameraError::Failed(m)) if m.contains("can't read")),
+            "{failed:?}"
+        );
+        o.set_cameras(failed);
+        o.adopt_camera(recorded_camera(None));
+        assert_eq!(o.camera_blocked, Some(why.clone()), "the scan failed");
+        assert!(!approved(&o), "{:?}", o.events);
+        o.release_camera();
+        // a successful scan naming no blocked node, then the open approves
+        let usable = crate::camera::Device {
+            name: "USB Cam".into(),
+            path: "/dev/video0".into(),
+        };
+        o.set_cameras(Ok(mixed_listing(usable, vec![])));
+        assert_eq!(o.camera_blocked, Some(why), "waits for a test open");
+        o.adopt_camera(recorded_camera(None));
+        assert_eq!(o.camera_blocked, None);
+        assert!(approved(&o), "{:?}", o.events);
+        assert!(!o.camera_fix_shown);
         crate::test_dir::fail_late();
     }
 
