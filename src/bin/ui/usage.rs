@@ -232,10 +232,11 @@ pub struct Meter {
     path: Option<PathBuf>,
     /// Where a failed save is logged (a `usage-*.txt` report).
     log_dir: Option<PathBuf>,
-    /// The last save failure, until a save works again.
-    save_error: Option<String>,
-    /// A save failure not yet shown to the user.
-    warning: Option<String>,
+    /// Saving has failed since the last good save (it was warned about
+    /// once). A load problem has its own warning and doesn't set this.
+    save_failing: bool,
+    /// Load and save problems not yet shown to the user, oldest first.
+    warnings: Vec<String>,
     /// USD per 24 h; 0 turns the cap off.
     pub cap_usd: f64,
 }
@@ -316,7 +317,7 @@ impl Meter {
         let msg = format!(
             "{why}. {kept}. The spend cap counts the last 24 h from zero now, so earlier spending isn't included."
         );
-        self.warn_once(msg);
+        self.report(msg);
     }
 
     /// In-memory only (tests).
@@ -331,8 +332,8 @@ impl Meter {
             ledger,
             path,
             log_dir: None,
-            save_error: None,
-            warning: None,
+            save_failing: false,
+            warnings: Vec::new(),
             cap_usd,
         }
     }
@@ -359,42 +360,42 @@ impl Meter {
                 .map_err(|e| e.to_string())
                 .and_then(|b| crate::project::write_atomic(&p, &b).map_err(|e| e.to_string()));
             match saved {
-                Ok(()) => self.save_error = None,
+                Ok(()) => self.save_failing = false,
                 Err(e) => self.save_failed(&p, &e),
             }
         }
     }
 
-    /// Warn once per run of failures: a toast (via `take_warning`), stderr
-    /// and a log report.
+    /// Warn once per run of save failures: a toast (via `take_warning`),
+    /// stderr and a log report. A good save ends the run. Independent of a
+    /// load warning earlier in the same session.
     fn save_failed(&mut self, path: &std::path::Path, e: &str) {
-        let msg = format!(
-            "Couldn't save the xAI spending history to {}: {}. The spend cap still counts this session, but after a restart the last 24 h will start from zero.",
-            path.display(),
-            e
-        );
-        self.warn_once(msg);
-    }
-
-    /// The first problem of a run of them: stderr, a `usage-*.txt` log
-    /// report and a warning for the user (via `take_warning`). A good save
-    /// ends the run.
-    fn warn_once(&mut self, msg: String) {
-        if self.save_error.is_none() {
-            eprintln!("warning: {msg}");
-            if let Some(dir) = &self.log_dir {
-                if let Err(le) = crate::crash::write_report_in(dir, "usage", &msg, "") {
-                    eprintln!("warning: couldn't write a log in {}: {le}", dir.display());
-                }
-            }
-            self.warning = Some(msg.clone());
+        if !self.save_failing {
+            self.report(format!(
+                "Couldn't save the xAI spending history to {}: {}. The spend cap still counts this session, but after a restart the last 24 h will start from zero.",
+                path.display(),
+                e
+            ));
         }
-        self.save_error = Some(msg);
+        self.save_failing = true;
     }
 
-    /// A save or load problem to show the user, once.
+    /// Tell the user about a problem: stderr, a `usage-*.txt` log report
+    /// and a warning (via `take_warning`).
+    fn report(&mut self, msg: String) {
+        eprintln!("warning: {msg}");
+        if let Some(dir) = &self.log_dir {
+            if let Err(le) = crate::crash::write_report_in(dir, "usage", &msg, "") {
+                eprintln!("warning: couldn't write a log in {}: {le}", dir.display());
+            }
+        }
+        self.warnings.push(msg);
+    }
+
+    /// The oldest load or save problem not yet shown to the user; each is
+    /// returned once.
     pub fn take_warning(&mut self) -> Option<String> {
-        self.warning.take()
+        (!self.warnings.is_empty()).then(|| self.warnings.remove(0))
     }
 
     pub fn last_24h_usd(&self) -> f64 {
@@ -533,7 +534,7 @@ mod tests {
         assert_eq!(reports.len(), 1, "{reports:?}");
         assert!(reports[0].contains(&w), "{reports:?}");
         m.record(&spend(0.10));
-        assert!(m.save_error.is_none());
+        assert!(!m.save_failing);
         assert!(serde_json::from_slice::<Ledger>(&std::fs::read(&path).unwrap()).is_ok());
         assert_eq!(
             std::fs::read(&bad).unwrap(),
@@ -647,7 +648,7 @@ mod tests {
         assert_eq!(reports.len(), 1, "{reports:?}");
         assert!(reports[0].contains(&w), "{reports:?}");
         m.record(&spend(0.10));
-        assert!(m.save_error.is_none(), "{:?}", m.save_error);
+        assert!(!m.save_failing);
         assert!(path.is_file());
         assert_eq!(m.take_warning(), None);
     }

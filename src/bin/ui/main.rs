@@ -1693,7 +1693,7 @@ impl App {
         {
             self.meter.record(&u);
         }
-        if let Some(w) = self.meter.take_warning() {
+        while let Some(w) = self.meter.take_warning() {
             self.toasts.push(ToastKind::Warn, &w);
         }
         if let Some(why) = self.assistant.cap_hit.take() {
@@ -5923,6 +5923,79 @@ mod tests {
         app.assistant.want_send = true;
         wait_idle(&mut app, &ctx, 10);
         assert_eq!(app.meter.session.calls, 0);
+    }
+
+    /// A load warning doesn't swallow a later save failure: a damaged
+    /// history (kept aside) and then a save that fails (a non-empty folder
+    /// where usage.json goes, so the rename fails for any user) give two
+    /// toasts in the same frame and two log reports. A good save ends the
+    /// run of failures, so the next failure warns again.
+    #[test]
+    fn a_save_failure_after_a_load_warning_is_warned_about_too() {
+        let ctx = egui::Context::default();
+        let tmp = test_dir::TestDir::new("usage_load_then_save");
+        let studio = tmp.path().join("studio");
+        std::fs::create_dir_all(&studio).unwrap();
+        let path = studio.join("usage.json");
+        std::fs::write(&path, b"{\"entries\":[").unwrap();
+        let logs = tmp.path().join("logs");
+        let mut app = app_with(&ctx, None);
+        app.meter = usage::Meter::load_from(path.clone(), logs.clone(), 0.50);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("blocker"), b"x").unwrap();
+        let warns = |app: &App| -> Vec<String> {
+            app.toasts
+                .items
+                .iter()
+                .filter(|t| matches!(t.kind, ToastKind::Warn))
+                .map(|t| t.text.clone())
+                .collect()
+        };
+        app.assistant.spent.push(dollars(0.30));
+        app.pump_usage();
+        let w = warns(&app);
+        assert_eq!(w.len(), 2, "load and save are both warned about: {w:?}");
+        assert!(w[0].contains("is damaged ("), "{w:?}");
+        assert!(
+            w[1].starts_with(&format!(
+                "Couldn't save the xAI spending history to {}",
+                path.display()
+            )),
+            "{w:?}"
+        );
+        let logged = |logs: &std::path::Path| -> Vec<String> {
+            std::fs::read_dir(logs)
+                .expect("the logs folder was made")
+                .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+                .collect()
+        };
+        let l = logged(&logs);
+        assert_eq!(l.len(), 2, "two log reports: {l:?}");
+        for msg in &w {
+            assert!(
+                l.iter().any(|b| b.contains(msg.as_str())),
+                "{msg} not logged"
+            );
+        }
+        app.assistant.spent.push(dollars(0.10));
+        app.pump_usage();
+        assert_eq!(warns(&app).len(), 2, "the same run of failures: no repeat");
+        assert!(app.meter.check(0.15).is_err(), "the cap still holds");
+
+        std::fs::remove_dir_all(&path).unwrap();
+        app.assistant.spent.push(dollars(0.01));
+        app.pump_usage();
+        assert!(path.is_file(), "saving works again");
+        assert_eq!(warns(&app).len(), 2);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("blocker"), b"x").unwrap();
+        app.assistant.spent.push(dollars(0.01));
+        app.pump_usage();
+        let w = warns(&app);
+        assert_eq!(w.len(), 3, "a new run of failures warns again: {w:?}");
+        assert!(w[2].starts_with("Couldn't save"), "{w:?}");
+        assert_eq!(logged(&logs).len(), 3);
     }
 
     /// A spending history that can't be saved warns once (toast and a log
