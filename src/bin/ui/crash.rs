@@ -1,6 +1,7 @@
 //! M3/D1: crash logs.
 //!
-//! A panic hook writes `crash-<UTC time>-<pid>.txt` to
+//! A panic hook writes `crash-<UTC time>-<pid>.txt` (`-2`, `-3`, ... for more
+//! reports in the same second, so none is overwritten) to
 //! `%APPDATA%\SeraphinaStudio\logs` (Windows; `~/.local/share/SeraphinaStudio/logs`
 //! elsewhere, `SERAPHINA_LOG_DIR` overrides) and, for a panic on the main
 //! thread, shows a native message box, because the release exe has no console.
@@ -121,9 +122,42 @@ pub fn write_report_in(
     what: &str,
     detail: &str,
 ) -> std::io::Result<PathBuf> {
+    write_report_at(dir, prefix, what, detail, now_secs())
+}
+
+/// `write_report_in` at a given time. A report already there for the same
+/// second (a background panic and then the main-thread panic it causes,
+/// or the gpu report and then the crash report) is never overwritten: the
+/// new one is named `-2`, `-3`, ...
+fn write_report_at(
+    dir: &Path,
+    prefix: &str,
+    what: &str,
+    detail: &str,
+    secs: u64,
+) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let stamp = crate::output::utc_stamp(now_secs());
-    let path = dir.join(format!("{}-{}-{}.txt", prefix, stamp, std::process::id()));
+    let stamp = crate::output::utc_stamp(secs);
+    let base = format!("{}-{}-{}", prefix, stamp, std::process::id());
+    // Start after the highest number already used this second, so a name
+    // freed by pruning is never reused (it would sort as the oldest).
+    let mut n = next_number(dir, &base);
+    let (path, mut f) = loop {
+        let path = dir.join(if n == 1 {
+            format!("{base}.txt")
+        } else {
+            format!("{base}-{n}.txt")
+        });
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(f) => break (path, f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e),
+        }
+    };
     let body = format!(
         "Seraphina Studio {} crash report\nTime: {}\nOS: {} {}\nRenderer: {}\nThread: {}\n\n{}\n\n{}\n",
         env!("CARGO_PKG_VERSION"),
@@ -138,7 +172,6 @@ pub fn write_report_in(
         what,
         detail
     );
-    let mut f = std::fs::File::create(&path)?;
     f.write_all(redact(&body).as_bytes())?;
     prune(dir);
     Ok(path)
@@ -148,13 +181,59 @@ pub fn write_report(prefix: &str, what: &str, detail: &str) -> std::io::Result<P
     write_report_in(&logs_dir(), prefix, what, detail)
 }
 
+/// One more than the highest same-second number among `dir`'s reports
+/// named `<base>.txt`, `<base>-<n>.txt` (and their `.seen` forms); 1 if none.
+fn next_number(dir: &Path, base: &str) -> u32 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 1;
+    };
+    rd.filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(base))
+                .is_some_and(|rest| rest.starts_with('-') || rest.starts_with('.'))
+        })
+        .map(|p| age_key(&p).1 + 1)
+        .max()
+        .unwrap_or(1)
+}
+
+/// Oldest first, whatever the prefix: by the time in the name, then the
+/// same-second number (none, `-2`, `-3`, ... `-10`). Names without a time
+/// sort by name, before the timed ones.
+fn age_key(p: &Path) -> (String, u32, String) {
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let base = name.trim_end_matches(".txt").trim_end_matches(".seen");
+    let rest = base.split_once('-').map_or("", |(_, r)| r);
+    let Some((stamp, tail)) = rest.split_once('Z') else {
+        return (String::new(), 0, name);
+    };
+    // tail is "-<pid>" or "-<pid>-<n>"
+    let n = tail
+        .trim_start_matches('-')
+        .split_once('-')
+        .and_then(|(_, n)| n.parse().ok())
+        .unwrap_or(1);
+    (stamp.to_string(), n, name)
+}
+
+fn sort_by_age(v: &mut [PathBuf]) {
+    v.sort_by_cached_key(|p| age_key(p));
+}
+
 /// Keep the newest `KEEP` reports.
 fn prune(dir: &Path) {
     let mut v: Vec<PathBuf> = list(dir, |_| true);
     if v.len() <= KEEP {
         return;
     }
-    v.sort();
+    sort_by_age(&mut v);
     for p in &v[..v.len() - KEEP] {
         let _ = std::fs::remove_file(p);
     }
@@ -180,7 +259,7 @@ pub fn unseen_in(dir: &Path) -> Vec<PathBuf> {
     let mut v = list(dir, |n| {
         n.starts_with("crash-") && !n.ends_with(".seen.txt")
     });
-    v.sort();
+    sort_by_age(&mut v);
     v.reverse();
     v
 }
@@ -443,5 +522,66 @@ mod tests {
         prune(dir);
         assert_eq!(list(dir, |_| true).len(), KEEP);
         crate::test_dir::fail_late();
+    }
+
+    /// Reports in the same second (a background panic and then the
+    /// main-thread panic it causes; the gpu report and then the crash
+    /// report) are all kept: the later ones are named `-2`, `-3`, and
+    /// none overwrites another.
+    #[test]
+    fn reports_in_the_same_second_are_all_kept() {
+        let tmp = crate::test_dir::TestDir::new("crash_same_second");
+        let dir = tmp.path();
+        let secs = 1_793_000_000;
+        let base = format!("{}-{}", crate::output::utc_stamp(secs), std::process::id());
+        let gpu =
+            write_report_at(dir, "gpu", "Panic while starting the renderer: a", "", secs).unwrap();
+        let first =
+            write_report_at(dir, "crash", "Panic on a background thread: b", "", secs).unwrap();
+        let second = write_report_at(dir, "crash", "Panic: c", "", secs).unwrap();
+        let third = write_report_at(dir, "crash", "Panic: d", "", secs).unwrap();
+        assert_eq!(gpu, dir.join(format!("gpu-{base}.txt")));
+        assert_eq!(first, dir.join(format!("crash-{base}.txt")));
+        assert_eq!(second, dir.join(format!("crash-{base}-2.txt")));
+        assert_eq!(third, dir.join(format!("crash-{base}-3.txt")));
+        for (p, what) in [
+            (&gpu, "Panic while starting the renderer: a"),
+            (&first, "Panic on a background thread: b"),
+            (&second, "Panic: c"),
+            (&third, "Panic: d"),
+        ] {
+            let body = std::fs::read_to_string(p).unwrap();
+            assert!(body.contains(what), "{}: {body}", p.display());
+        }
+        assert_eq!(list(dir, |_| true).len(), 4);
+        assert_eq!(
+            unseen_in(dir),
+            vec![third, second, first],
+            "newest first, the same-second number counts"
+        );
+    }
+
+    /// Pruning keeps the `KEEP` newest reports by their time and
+    /// same-second number, whatever their prefix: newer `crash-*` reports
+    /// outlive older `usage-*` and `gpu-*` ones, and within one second
+    /// `-10` is newer than `-2` (the cut falls inside that second).
+    #[test]
+    fn pruning_keeps_the_newest_reports_whatever_their_prefix() {
+        let tmp = crate::test_dir::TestDir::new("crash_prune_age");
+        let dir = tmp.path();
+        let t0 = 1_793_000_000;
+        let mut made = Vec::new();
+        for (i, prefix) in ["usage", "usage", "gpu", "gpu"].into_iter().enumerate() {
+            made.push(write_report_at(dir, prefix, "older", "", t0 + i as u64).unwrap());
+        }
+        for _ in 0..22 {
+            made.push(write_report_at(dir, "crash", "newest second", "", t0 + 4).unwrap());
+        }
+        assert!(made[made.len() - 1].to_string_lossy().ends_with("-22.txt"));
+        let mut left = list(dir, |_| true);
+        left.sort();
+        let mut want = made[made.len() - KEEP..].to_vec();
+        want.sort();
+        assert_eq!(left, want, "the {KEEP} newest are kept");
     }
 }
