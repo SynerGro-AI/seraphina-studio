@@ -1693,6 +1693,9 @@ impl App {
         {
             self.meter.record(&u);
         }
+        if let Some(w) = self.meter.take_warning() {
+            self.toasts.push(ToastKind::Warn, &w);
+        }
         if let Some(why) = self.assistant.cap_hit.take() {
             self.toasts.push(ToastKind::Warn, &why);
         }
@@ -5920,6 +5923,66 @@ mod tests {
         app.assistant.want_send = true;
         wait_idle(&mut app, &ctx, 10);
         assert_eq!(app.meter.session.calls, 0);
+    }
+
+    /// A spending history that can't be saved warns once (toast and a log
+    /// report) and the cap still holds for this session. A file sits where
+    /// the studio folder should be, so the save genuinely fails (for root
+    /// too, unlike a read-only folder).
+    #[test]
+    fn an_unsaveable_spending_history_warns_and_the_cap_still_holds() {
+        let ctx = egui::Context::default();
+        let tmp = test_dir::TestDir::new("usage_unsaveable");
+        let studio = tmp.path().join("studio");
+        std::fs::write(&studio, b"not a folder").unwrap();
+        let logs = tmp.path().join("logs");
+        let mut app = app_with(&ctx, None);
+        app.meter = usage::Meter::load_from(studio.join("usage.json"), logs.clone(), 0.50);
+        for _ in 0..2 {
+            app.assistant.spent.push(dollars(0.30));
+            app.pump_usage();
+        }
+        let warns: Vec<&str> = app
+            .toasts
+            .items
+            .iter()
+            .filter(|t| matches!(t.kind, ToastKind::Warn))
+            .map(|t| t.text.as_str())
+            .collect();
+        assert_eq!(warns.len(), 1, "one warning, not one per call: {warns:?}");
+        assert!(
+            warns[0].starts_with(&format!(
+                "Couldn't save the xAI spending history to {}",
+                studio.join("usage.json").display()
+            )),
+            "{warns:?}"
+        );
+        assert!(warns[0].contains("after a restart the last 24 h will start from zero"));
+        let logged: Vec<_> = std::fs::read_dir(&logs)
+            .expect("the logs folder was made")
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(logged.len(), 1, "one log report: {logged:?}");
+        let name = logged[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            name.starts_with("usage-") && name.ends_with(".txt"),
+            "{name}"
+        );
+        let body = std::fs::read_to_string(&logged[0]).unwrap();
+        assert!(
+            body.contains("Couldn't save the xAI spending history"),
+            "{body}"
+        );
+        // the cap counts both calls in memory
+        let e = app.meter.check(0.0).unwrap_err();
+        assert!(e.starts_with("Spend cap reached ($0.60 of $0.50"), "{e}");
+        assert!(app.cap_allows(0.01, true).is_err());
+        assert!(studio.is_file(), "the file in the way is left alone");
+        test_dir::fail_late();
     }
 
     #[test]

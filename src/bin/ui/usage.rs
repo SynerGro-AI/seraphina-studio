@@ -5,7 +5,9 @@
 //! stream, a job whose final status we never saw, a provider that does
 //! not report it) we estimate from the public price list and mark the
 //! entry as estimated. The cap counts the last 24 hours across sessions,
-//! kept in `~/.seraphina/studio/usage.json`.
+//! kept in `~/.seraphina/studio/usage.json`. If that file can't be
+//! saved, the app warns once (toast and a `usage-*.txt` log report) and the
+//! cap keeps counting this session in memory.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -223,6 +225,12 @@ pub struct Meter {
     pub project: Totals,
     ledger: Ledger,
     path: Option<PathBuf>,
+    /// Where a failed save is logged (a `usage-*.txt` report).
+    log_dir: Option<PathBuf>,
+    /// The last save failure, until a save works again.
+    save_error: Option<String>,
+    /// A save failure not yet shown to the user.
+    warning: Option<String>,
     /// USD per 24 h; 0 turns the cap off.
     pub cap_usd: f64,
 }
@@ -234,12 +242,17 @@ impl Meter {
 
     /// Load the 24 h ledger from disk (a damaged file starts fresh).
     pub fn load(cap_usd: f64) -> Self {
-        let path = Self::path();
+        Self::load_from(Self::path(), crate::crash::logs_dir(), cap_usd)
+    }
+
+    /// `load` with the ledger file and the log folder given.
+    pub fn load_from(path: PathBuf, log_dir: PathBuf, cap_usd: f64) -> Self {
         let ledger = std::fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let mut m = Self::with(Some(path), ledger, cap_usd);
+        m.log_dir = Some(log_dir);
         m.prune(now_secs());
         m
     }
@@ -255,6 +268,9 @@ impl Meter {
             project: Totals::default(),
             ledger,
             path,
+            log_dir: None,
+            save_error: None,
+            warning: None,
             cap_usd,
         }
     }
@@ -276,17 +292,40 @@ impl Meter {
         if u.ticks > 0 {
             self.ledger.entries.push((now, u.ticks));
         }
-        if let Some(p) = &self.path {
-            if let Some(d) = p.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            if let Ok(b) = serde_json::to_vec(&self.ledger) {
-                let tmp = p.with_extension("json.tmp");
-                if std::fs::write(&tmp, b).is_ok() {
-                    let _ = std::fs::rename(&tmp, p);
-                }
+        if let Some(p) = self.path.clone() {
+            let saved = serde_json::to_vec(&self.ledger)
+                .map_err(|e| e.to_string())
+                .and_then(|b| crate::project::write_atomic(&p, &b).map_err(|e| e.to_string()));
+            match saved {
+                Ok(()) => self.save_error = None,
+                Err(e) => self.save_failed(&p, &e),
             }
         }
+    }
+
+    /// Warn once per run of failures: a toast (via `take_warning`), stderr
+    /// and a log report.
+    fn save_failed(&mut self, path: &std::path::Path, e: &str) {
+        let msg = format!(
+            "Couldn't save the xAI spending history to {}: {}. The spend cap still counts this session, but after a restart the last 24 h will start from zero.",
+            path.display(),
+            e
+        );
+        if self.save_error.is_none() {
+            eprintln!("warning: {msg}");
+            if let Some(dir) = &self.log_dir {
+                if let Err(le) = crate::crash::write_report_in(dir, "usage", &msg, "") {
+                    eprintln!("warning: couldn't write a log in {}: {le}", dir.display());
+                }
+            }
+            self.warning = Some(msg.clone());
+        }
+        self.save_error = Some(msg);
+    }
+
+    /// A save failure to show the user, once.
+    pub fn take_warning(&mut self) -> Option<String> {
+        self.warning.take()
     }
 
     pub fn last_24h_usd(&self) -> f64 {

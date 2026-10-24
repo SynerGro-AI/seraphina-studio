@@ -72,7 +72,10 @@ Cost: xAI bills your key per chat message, per image and per second of
 video. The status bar (bottom right) shows what this session spent; Settings > xAI
 spending shows the session, this project and the last 24 hours, and lets
 you set a spend cap (USD per 24 h, 0 = off). Once the cap is reached
-nothing more is sent to xAI and a message says so. Costs use xAI's own
+nothing more is sent to xAI and a message says so. If the 24 h history
+can't be saved, a warning says so (once) and a usage-*.txt report goes in
+the logs folder; the cap still counts this session, but after a restart
+the last 24 h start from zero. Costs use xAI's own
 figures when it reports them, otherwise estimates from the public price
 list (video is always estimated). Stop (shown while Seraphina or Grok
 Imagine is working) ends the wait at once, but a request xAI had already
