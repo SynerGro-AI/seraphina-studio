@@ -1359,6 +1359,9 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn v4l2_list_reports_a_node_it_is_not_allowed_to_open() {
+        if rerun_as_nobody("camera::tests::v4l2_list_reports_a_node_it_is_not_allowed_to_open") {
+            return;
+        }
         let dir = crate::test_dir::TestDir::new("v4l2_nodes");
         let locked = locked_node(&dir, "video0");
         std::fs::write(dir.path().join("video1"), b"").unwrap();
@@ -1388,6 +1391,49 @@ pub(crate) mod tests {
         probes: Vec<(String, Result<Option<Device>, CameraError>)>,
     ) -> Listing {
         Listing::from_probes(std::iter::once((usable.path.clone(), Ok(Some(usable)))).chain(probes))
+    }
+
+    /// File modes don't bind root, so as root a permission test runs again
+    /// in a child process as `nobody` (setgid + setuid; std drops the
+    /// supplementary groups). True when that child ran `test` and it
+    /// passed; the caller then returns. Panics if privileges can't be
+    /// dropped or the child fails: never a quiet skip.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn rerun_as_nobody(test: &str) -> bool {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            return false;
+        }
+        // SAFETY: a NUL-terminated name; the record is read at once.
+        let (uid, gid) = unsafe {
+            let pw = libc::getpwnam(c"nobody".as_ptr());
+            assert!(
+                !pw.is_null(),
+                "running as root, and there is no `nobody` user to drop to: {test} needs a user that file modes apply to"
+            );
+            ((*pw).pw_uid, (*pw).pw_gid)
+        };
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(&exe)
+            .args([test, "--exact", "--nocapture", "--test-threads=1"])
+            .uid(uid)
+            .gid(gid)
+            .current_dir("/")
+            .output()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "running as root: can't drop to nobody ({uid}:{gid}) to run {test} from {}: {e}",
+                    exe.display()
+                )
+            });
+        let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && text.contains("test result: ok. 1 passed"),
+            "{test} as nobody ({uid}:{gid}) did not pass:\n{text}"
+        );
+        eprintln!("{test}: this process is root, so it ran as nobody ({uid}:{gid}) and passed");
+        true
     }
 
     /// A mode-000 `name` in `dir`, which this user can't open.
@@ -1429,6 +1475,9 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn v4l2_list_shows_usable_and_blocked_cameras_together() {
+        if rerun_as_nobody("camera::tests::v4l2_list_shows_usable_and_blocked_cameras_together") {
+            return;
+        }
         let dir = crate::test_dir::TestDir::new("v4l2_mixed");
         let readable = dir.path().join("video1");
         std::fs::write(&readable, b"").unwrap();

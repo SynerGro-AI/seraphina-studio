@@ -226,6 +226,9 @@ is blocked, an empty folder is "no camera"),
 `settings_list_usable_cameras_and_name_each_blocked_one` (a real readable
 node and real mode-000 nodes next to a usable camera; no V4L2 camera exists
 on the dev box, so that one is a `Device` as the capability query returns it),
+run as root, these three permission tests re-run themselves in a child
+process as `nobody` (file modes don't bind root) and fail with the reason
+if privileges can't be dropped; they never skip,
 `windows_access_denied_at_activation_is_blocked_access`,
 `approve_on_windows_opens_the_camera_privacy_page`,
 `blocked_camera_access_is_rechecked_on_a_timer_and_on_focus`.

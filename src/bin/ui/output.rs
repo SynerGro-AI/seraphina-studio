@@ -2745,7 +2745,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn settings_list_usable_cameras_and_name_each_blocked_one() {
-        use crate::camera::tests::{blocked_why, locked_node, mixed_listing};
+        use crate::camera::tests::{blocked_why, locked_node, mixed_listing, rerun_as_nobody};
+        if rerun_as_nobody("output::tests::settings_list_usable_cameras_and_name_each_blocked_one")
+        {
+            return;
+        }
         let dir = crate::test_dir::TestDir::new("output_mixed_cameras");
         let readable = dir.path().join("video1");
         std::fs::write(&readable, b"").unwrap();
