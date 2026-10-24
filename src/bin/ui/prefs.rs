@@ -189,7 +189,8 @@ mod tests {
 
     #[test]
     fn corrupt_prefs_file_is_preserved_and_reported() {
-        let dir = project::test_dir("corrupt-prefs");
+        let tmp = crate::test_dir::TestDir::new("corrupt-prefs");
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("mercy_bank.json");
         let damaged = b"{\"weights\": {\"tool.brush\": 0.7, \"param.size\": 1";
         std::fs::write(&path, damaged).unwrap();
@@ -215,11 +216,13 @@ mod tests {
         let b2 = backups(&dir, "mercy_bank.json");
         assert_eq!(b2.len(), 2);
         assert!(b2.iter().any(|x| std::fs::read(x).unwrap() == b"not json"));
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn missing_or_valid_prefs_load_quietly() {
-        let dir = project::test_dir("prefs-ok");
+        let tmp = crate::test_dir::TestDir::new("prefs-ok");
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("mercy_bank.json");
         let mut p = Prefs::load(path.clone());
         assert!(p.load_warning.is_none());
@@ -234,11 +237,13 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["mercy_bank.json".to_string()]);
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn corrupt_output_settings_are_preserved() {
-        let dir = project::test_dir("corrupt-output");
+        let tmp = crate::test_dir::TestDir::new("corrupt-output");
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("output.json");
         std::fs::write(&path, b"{\"fps\": \"sixty\"}").unwrap();
         let (cfg, w) = crate::output::OutputConfig::load_from(&path);
@@ -248,6 +253,7 @@ mod tests {
         assert_eq!(std::fs::read(&b[0]).unwrap(), b"{\"fps\": \"sixty\"}");
         cfg.save_to(&path).unwrap();
         assert!(crate::output::OutputConfig::load_from(&path).1.is_none());
+        crate::test_dir::fail_late();
     }
 
     #[test]

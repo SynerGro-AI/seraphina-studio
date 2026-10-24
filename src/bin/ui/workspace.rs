@@ -1058,7 +1058,8 @@ pub(crate) mod tests {
         let a = AssistantPanel::with_provider(None, crate::prefs::Prefs::ephemeral());
         let mut app = App::with(ctx, a, crate::videogen::VideoGenPanel::unconfigured());
         // never touch the user's saved output settings or stream key
-        let dir = std::env::temp_dir().join(format!("seraphina_proj_rec_{}", std::process::id()));
+        let rec = crate::test_dir::TestDir::new("proj_rec");
+        let dir = rec.path().to_path_buf();
         app.output = crate::output::Output::new(
             OutputConfig {
                 record_dir: dir.to_string_lossy().into_owned(),
@@ -1068,7 +1069,10 @@ pub(crate) mod tests {
             },
             String::new(),
         );
-        app.project.docs_dir = project::test_dir("docs");
+        let docs = crate::test_dir::TestDir::new("docs");
+        app.project.docs_dir = docs.path().to_path_buf();
+        app.test_dirs.push(rec);
+        app.test_dirs.push(docs);
         app.mark_saved();
         app
     }
@@ -1280,7 +1284,8 @@ pub(crate) mod tests {
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
         edit(&mut a);
-        let path = project::test_dir(tag).join("work.seraphina");
+        let tmp = crate::test_dir::TestDir::new(tag);
+        let path = tmp.path().join("work.seraphina");
         a.save_project_to(&path).unwrap();
         assert!(!a.is_dirty());
         let ctx2 = egui::Context::default();
@@ -1297,6 +1302,7 @@ pub(crate) mod tests {
             project::read(&again).unwrap(),
         );
         assert_eq!(c1.assets, c2.assets);
+        b.test_dirs.push(tmp);
         (a, b)
     }
 
@@ -1309,6 +1315,7 @@ pub(crate) mod tests {
             assert!(x.raster.data == y.raster.data, "layer {} pixels", x.name);
         }
         assert_eq!(b.mode, Mode::Paint);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1318,6 +1325,7 @@ pub(crate) mod tests {
         assert!(a.anim.frames.len() >= 3);
         assert!(a.anim.frames[1].data == b.anim.frames[1].data);
         assert_eq!(b.anim.fps, 8.0);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1330,6 +1338,7 @@ pub(crate) mod tests {
         assert_eq!(x.layer.opacity, y.layer.opacity);
         assert_eq!(x.layer.blend, y.layer.blend);
         assert_eq!(x.opacity, y.opacity);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1341,12 +1350,14 @@ pub(crate) mod tests {
             format!("{:?}", b.scene.assign)
         );
         assert_eq!(b.scene.selected, a.scene.selected);
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn materials_round_trip_losslessly() {
         let (_, b) = round_trip("mats", edit_materials);
         assert!(b.materials.lib.profiles.contains_key("My rust"));
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1354,6 +1365,7 @@ pub(crate) mod tests {
         let (a, b) = round_trip("stream", edit_stream);
         assert_eq!(a.stream.width, b.stream.width);
         assert_eq!(b.mode, Mode::Stream);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1372,6 +1384,7 @@ pub(crate) mod tests {
             assert!(!json.contains(secret), "manifest leaks {}", secret);
         }
         assert!(json.contains("rtmp://live.example.com/app"));
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1388,9 +1401,11 @@ pub(crate) mod tests {
         let mut a = test_app(&ctx);
         a.project.include_chat = false;
         edit_chat(&mut a);
-        let path = project::test_dir("nochat").join("p.seraphina");
+        let tmp = crate::test_dir::TestDir::new("nochat");
+        let path = tmp.path().join("p.seraphina");
         a.save_project_to(&path).unwrap();
         assert!(project::read(&path).unwrap().manifest.get("chat").is_none());
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1427,6 +1442,7 @@ pub(crate) mod tests {
             b.scene.objs[0].name,
             a.scene.arena_start.as_ref().unwrap()[0].name
         );
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1453,6 +1469,7 @@ pub(crate) mod tests {
         }
         assert_eq!(a.lab.rel.nb, b.lab.rel.nb);
         assert_eq!(a.lab.rel.peri_moved, b.lab.rel.peri_moved);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1479,23 +1496,27 @@ pub(crate) mod tests {
         for k in ["arena", "arena_env", "arena_playing", "phys", "arena_start"] {
             scene.remove(k);
         }
-        let path = project::test_dir("oldfmt").join("old.seraphina");
+        let tmp = crate::test_dir::TestDir::new("oldfmt");
+        let path = tmp.path().join("old.seraphina");
         project::write(&path, &c).unwrap();
         let mut b = test_app(&egui::Context::default());
         b.open_project_from(&path).unwrap();
         assert_eq!(b.scene.objs.len(), a.scene.objs.len());
         assert!(b.scene.arena.is_none());
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn every_mode_round_trips_together() {
         let (a, b) = round_trip("all", edit_all);
         assert_eq!(a.mode, b.mode);
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn kill_mid_edit_then_relaunch_recovers_every_mode() {
-        let dir = project::test_dir("crash");
+        let tmp = crate::test_dir::TestDir::new("crash");
+        let dir = tmp.path().to_path_buf();
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
         a.start_session(dir.clone());
@@ -1526,11 +1547,13 @@ pub(crate) mod tests {
         let mut c = c;
         c.start_session(dir);
         assert!(c.project.prompt.is_none());
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn recovery_remembers_the_project_file() {
-        let dir = project::test_dir("crash-path");
+        let tmp = crate::test_dir::TestDir::new("crash-path");
+        let dir = tmp.path().to_path_buf();
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
         a.start_session(dir.clone());
@@ -1544,11 +1567,13 @@ pub(crate) mod tests {
         b.recover().unwrap();
         assert_eq!(b.project.path.as_deref(), Some(file.as_path()));
         assert_eq!(b.title_label(), "mine.seraphina ●");
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn discarding_recovery_deletes_the_autosave() {
-        let dir = project::test_dir("discard");
+        let tmp = crate::test_dir::TestDir::new("discard");
+        let dir = tmp.path().to_path_buf();
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
         a.start_session(dir.clone());
@@ -1559,6 +1584,7 @@ pub(crate) mod tests {
         b.start_session(dir.clone());
         b.project.session.discard_recovery();
         assert!(!dir.join(project::AUTOSAVE_FILE).exists());
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1578,20 +1604,24 @@ pub(crate) mod tests {
         a.track_changes();
         assert!(a.is_dirty());
         assert_eq!(a.title_label(), "Untitled ●");
-        let path = project::test_dir("dirty").join("d.seraphina");
+        let tmp = crate::test_dir::TestDir::new("dirty");
+        let path = tmp.path().join("d.seraphina");
         a.save_project_to(&path).unwrap();
         assert!(!a.is_dirty());
         assert_eq!(a.title_label(), "d.seraphina");
         run(&mut a, r#"{"cmd":"switch_mode","mode":"paint"}"#);
         run(&mut a, r#"{"cmd":"brush_stroke","points":[[5,5],[50,50]]}"#);
         assert!(a.is_dirty());
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn a_relative_name_saves_and_opens_in_documents() {
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
-        a.project.docs_dir = project::test_dir("relative-docs");
+        let docs = crate::test_dir::TestDir::new("relative-docs");
+        a.project.docs_dir = docs.path().to_path_buf();
+        a.test_dirs.push(docs);
         edit_scene(&mut a);
         let n = a.scene.objs.len();
         a.cmd_save_project(Some("smoke"), false).unwrap();
@@ -1602,13 +1632,15 @@ pub(crate) mod tests {
         b.cmd_open_project(Some("smoke")).unwrap();
         assert_eq!(b.scene.objs.len(), n);
         assert_eq!(b.project.path.as_deref(), Some(file.as_path()));
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn open_with_unsaved_changes_asks_first() {
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
-        let path = project::test_dir("ask").join("x.seraphina");
+        let tmp = crate::test_dir::TestDir::new("ask");
+        let path = tmp.path().join("x.seraphina");
         a.save_project_to(&path).unwrap();
         edit_scene(&mut a);
         let before = a.scene.objs.len();
@@ -1624,13 +1656,15 @@ pub(crate) mod tests {
         a.run_after(After::Open(Some(path))).unwrap();
         assert_eq!(a.scene.objs.len(), before - 1);
         assert!(a.cmd_new_project().is_ok());
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn save_as_never_silently_overwrites() {
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
-        let path = project::test_dir("overwrite").join("taken.seraphina");
+        let tmp = crate::test_dir::TestDir::new("overwrite");
+        let path = tmp.path().join("taken.seraphina");
         std::fs::write(&path, b"someone else's file").unwrap();
         a.save_then(path.clone(), SaveTarget::Project(After::Nothing), false);
         assert_eq!(
@@ -1652,6 +1686,7 @@ pub(crate) mod tests {
             Some(Prompt::SavePath(SaveTarget::Project(After::Nothing)))
         );
         assert!(b.project.path_text.ends_with("Untitled.seraphina"));
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -1660,7 +1695,8 @@ pub(crate) mod tests {
         let mut a = test_app(&ctx);
         edit_scene(&mut a);
         let before = state(&a);
-        let dir = project::test_dir("bad");
+        let tmp = crate::test_dir::TestDir::new("bad");
+        let dir = tmp.path().to_path_buf();
         let junk = dir.join("junk.seraphina");
         std::fs::write(&junk, b"PK\x03\x04 not really").unwrap();
         assert!(a.open_project_from(&junk).is_err());
@@ -1673,13 +1709,15 @@ pub(crate) mod tests {
         assert!(e.contains("missing asset"), "{}", e);
         assert_eq!(before.manifest, state(&a).manifest);
         assert_eq!(before.assets, state(&a).assets);
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn scripts_need_a_flag_for_project_files() {
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
-        let dir = project::test_dir("script");
+        let tmp = crate::test_dir::TestDir::new("script");
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("scripted.seraphina");
         let script = dir.join("s.jsonl");
         std::fs::write(
@@ -1695,6 +1733,7 @@ pub(crate) mod tests {
         a.project.script_files = true;
         assert_eq!(a.run_script(script.to_str().unwrap()), 2);
         assert!(out.exists());
+        crate::test_dir::fail_late();
     }
 
     // ---- A6: dialogs and exports ------------------------------------------

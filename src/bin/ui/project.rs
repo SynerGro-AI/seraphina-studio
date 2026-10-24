@@ -488,22 +488,6 @@ fn marker_alive(marker: &Path) -> bool {
     }
 }
 
-/// Unique scratch directory for tests.
-#[cfg(test)]
-pub fn test_dir(tag: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let d = std::env::temp_dir().join(format!(
-        "seraphina-test-{}-{}-{}",
-        tag,
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,7 +529,8 @@ mod tests {
 
     #[test]
     fn atomic_write_survives_an_interrupted_write() {
-        let d = test_dir("atomic");
+        let tmp = crate::test_dir::TestDir::new("atomic");
+        let d = tmp.path().to_path_buf();
         let p = d.join("art.seraphina");
         let good = encode(&sample()).unwrap();
         write_atomic(&p, &good).unwrap();
@@ -565,12 +550,13 @@ mod tests {
         write_atomic(&p, &newer).unwrap();
         assert_eq!(read(&p).unwrap(), c2);
         assert!(!temp_path(&p).exists());
-        let _ = std::fs::remove_dir_all(d);
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn session_marker_detects_a_crash() {
-        let d = test_dir("session");
+        let tmp = crate::test_dir::TestDir::new("session");
+        let d = tmp.path().to_path_buf();
         // clean run: no recovery next time
         let mut s = Session::start(d.clone());
         assert!(s.recovery.is_none());
@@ -589,7 +575,7 @@ mod tests {
         );
         s2.discard_recovery();
         assert!(!d.join(AUTOSAVE_FILE).exists());
-        let _ = std::fs::remove_dir_all(d);
+        crate::test_dir::fail_late();
     }
 
     #[test]

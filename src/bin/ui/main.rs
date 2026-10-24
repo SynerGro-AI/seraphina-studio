@@ -4022,7 +4022,8 @@ mod tests {
             );
         }
         // and the same after saving and reopening
-        let path = project::test_dir("fresh-clean").join("fresh.seraphina");
+        let tmp = crate::test_dir::TestDir::new("fresh-clean");
+        let path = tmp.path().join("fresh.seraphina");
         app.save_project_to(&path).unwrap();
         app.open_project_from(&path).unwrap();
         for m in [Mode::Scene, Mode::Materials, Mode::Paint] {
@@ -4031,11 +4032,13 @@ mod tests {
             t += 1.0;
             assert!(!app.check_dirty(), "{:?} after reopening", m);
         }
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn a_damaged_learning_bank_is_announced_at_startup() {
-        let dir = project::test_dir("startup-corrupt");
+        let tmp = crate::test_dir::TestDir::new("startup-corrupt");
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("mercy_bank.json");
         std::fs::write(&path, b"\x00\x00garbage").unwrap();
         let ctx = egui::Context::default();
@@ -4046,6 +4049,7 @@ mod tests {
             .items
             .iter()
             .any(|t| matches!(t.kind, ToastKind::Warn) && t.text.contains("learning bank")));
+        crate::test_dir::fail_late();
     }
 
     fn app_with(ctx: &egui::Context, provider: Option<Arc<dyn llm::LlmProvider>>) -> App {
@@ -4065,7 +4069,9 @@ mod tests {
             String::new(),
         );
         app.test_dirs.push(rec);
-        app.project.docs_dir = project::test_dir("docs");
+        let docs = crate::test_dir::TestDir::new("docs");
+        app.project.docs_dir = docs.path().to_path_buf();
+        app.test_dirs.push(docs);
         app
     }
 

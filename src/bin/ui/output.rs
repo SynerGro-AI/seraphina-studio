@@ -2674,9 +2674,8 @@ mod tests {
             ..Default::default()
         };
         let mut o = Output::new(cfg, String::new());
-        let path =
-            std::env::temp_dir().join(format!("seraphina_rec_test_{}.mp4", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let tmp = crate::test_dir::TestDir::new("rec_test");
+        let path = tmp.path().join("rec.mp4");
         o.start_record(Some(path.clone())).unwrap();
         let t0 = Instant::now();
         let mut i = 0;
@@ -2706,10 +2705,10 @@ mod tests {
         if let Ok(out) = std::env::var("RECORD_TEST_OUT") {
             std::fs::copy(&path, out).unwrap();
         }
-        let _ = std::fs::remove_file(&path);
+        crate::test_dir::fail_late();
     }
 
-    fn camera_test_output(path: &Path) -> Output {
+    fn camera_test_output() -> Output {
         let cfg = OutputConfig {
             width: 320,
             height: 180,
@@ -2718,7 +2717,6 @@ mod tests {
             camera_device: "Recorded Cam".into(),
             ..Default::default()
         };
-        let _ = std::fs::remove_file(path);
         Output::new(cfg, String::new())
     }
 
@@ -2885,8 +2883,9 @@ mod tests {
     #[cfg_attr(windows, ignore = "the Windows runners and Wine have no ffmpeg.exe")]
     fn camera_source_records_the_camera_picture() {
         let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
-        let path = std::env::temp_dir().join(format!("seraphina_cam_{}.mp4", std::process::id()));
-        let mut o = camera_test_output(&path);
+        let tmp = crate::test_dir::TestDir::new("cam");
+        let path = tmp.path().join("cam.mp4");
+        let mut o = camera_test_output();
         o.camera = Some(recorded_camera(None));
         o.push_frame(Arc::new(Raster::filled(320, 180, [20, 40, 220, 255])));
         o.start_record(Some(path.clone())).unwrap();
@@ -2903,7 +2902,7 @@ mod tests {
             r > 170 && g < 80 && b < 80,
             "expected camera red, got {r},{g},{b}"
         );
-        let _ = std::fs::remove_file(&path);
+        crate::test_dir::fail_late();
     }
 
     /// A camera that stops sending ends the recording with the reason,
@@ -2912,9 +2911,9 @@ mod tests {
     #[cfg_attr(windows, ignore = "the Windows runners and Wine have no ffmpeg.exe")]
     fn camera_failure_stops_the_recording_with_a_reason() {
         find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
-        let path =
-            std::env::temp_dir().join(format!("seraphina_cam_fail_{}.mp4", std::process::id()));
-        let mut o = camera_test_output(&path);
+        let tmp = crate::test_dir::TestDir::new("cam_fail");
+        let path = tmp.path().join("cam.mp4");
+        let mut o = camera_test_output();
         o.camera = Some(recorded_camera(Some(40)));
         o.start_record(Some(path.clone())).unwrap();
         let t0 = Instant::now();
@@ -2932,7 +2931,7 @@ mod tests {
             "{toasts:?}"
         );
         assert!(o.camera.is_none());
-        let _ = std::fs::remove_file(&path);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -2993,17 +2992,14 @@ mod tests {
 
     /// A one-shot `ffmpeg -listen 1` RTMP server on 127.0.0.1 that saves
     /// what it receives under `live/rx_test_key`; returns it, its port and
-    /// the file.
-    fn rtmp_listener(ff: &Path, tag: &str) -> (Child, u16, PathBuf) {
+    /// the folder holding the file (removed when dropped) and the file.
+    fn rtmp_listener(ff: &Path, tag: &str) -> (Child, u16, crate::test_dir::TestDir, PathBuf) {
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a free port");
             l.local_addr().expect("local addr").port()
         };
-        let got = std::env::temp_dir().join(format!(
-            "seraphina_rtmp_rx_{tag}_{}.flv",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&got);
+        let tmp = crate::test_dir::TestDir::new(&format!("rtmp_rx_{tag}"));
+        let got = tmp.path().join("rx.flv");
         let server = Command::new(ff)
             .args(["-hide_banner", "-loglevel", "error", "-listen", "1", "-i"])
             .arg(format!("rtmp://127.0.0.1:{port}/live/rx_test_key"))
@@ -3023,7 +3019,7 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
-        (server, port, got)
+        (server, port, tmp, got)
     }
 
     /// Goes live against `ffmpeg -listen 1` acting as the RTMP server: the
@@ -3034,7 +3030,7 @@ mod tests {
     #[cfg_attr(windows, ignore = "the Windows runners and Wine have no ffmpeg.exe")]
     fn goes_live_to_an_ffmpeg_rtmp_listener() {
         let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
-        let (mut server, port, got) = rtmp_listener(&ff, "plain");
+        let (mut server, port, _tmp, got) = rtmp_listener(&ff, "plain");
         let cfg = OutputConfig {
             rtmp_url: format!("rtmp://127.0.0.1:{port}/live"),
             width: 320,
@@ -3084,7 +3080,7 @@ mod tests {
             ev.iter().all(|(_, m)| !m.contains("rx_test_key")),
             "key leaked into a message"
         );
-        let _ = std::fs::remove_file(&got);
+        crate::test_dir::fail_late();
     }
 
     /// A live Output with a 10 s stream delay, aimed at a free port with
@@ -3231,7 +3227,7 @@ mod tests {
     )]
     fn stream_delay_holds_the_stream_back_by_the_delay() {
         let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
-        let (mut server, port, got) = rtmp_listener(&ff, "delay");
+        let (mut server, port, _tmp, got) = rtmp_listener(&ff, "delay");
         let cfg = OutputConfig {
             rtmp_url: format!("rtmp://127.0.0.1:{port}/live"),
             width: 320,
@@ -3294,7 +3290,7 @@ mod tests {
             p.contains("codec_name=h264") && p.contains("width=320") && p.contains("height=180"),
             "listener did not receive the stream: {p}"
         );
-        let _ = std::fs::remove_file(&got);
+        crate::test_dir::fail_late();
     }
 
     /// With a stream delay two ffmpegs run; when the relay dies (here: no
@@ -3713,8 +3709,8 @@ mod tests {
         ]);
         assert!(m.status.success(), "load null sink: {m:?}");
         let module = String::from_utf8_lossy(&m.stdout).trim().to_string();
-        let dir = std::env::temp_dir().join(format!("seraphina_mic_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let tmp = crate::test_dir::TestDir::new("mic");
+        let dir = tmp.path().to_path_buf();
         let tone = dir.join("tone.wav");
         assert!(Command::new(&ff)
             .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
@@ -3760,7 +3756,7 @@ mod tests {
             share > 0.5,
             "only {share:.3} of the captured energy is the 1234 Hz tone played into the source"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 
     /// A capture device that doesn't exist must fail loudly: an error
@@ -3780,7 +3776,8 @@ mod tests {
             ..Default::default()
         };
         let mut o = Output::new(cfg, String::new());
-        let path = std::env::temp_dir().join(format!("seraphina_nomic_{}.mp4", std::process::id()));
+        let tmp = crate::test_dir::TestDir::new("nomic");
+        let path = tmp.path().join("nomic.mp4");
         o.start_record(Some(path.clone())).expect("ffmpeg starts");
         let mut ev = Vec::new();
         let t0 = Instant::now();
@@ -3796,6 +3793,6 @@ mod tests {
             "{ev:?}"
         );
         assert!(o.status().error.is_some(), "{:?}", o.status());
-        let _ = std::fs::remove_file(&path);
+        crate::test_dir::fail_late();
     }
 }
