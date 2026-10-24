@@ -537,6 +537,14 @@ pub fn build_args(
         ]);
         if cfg.source != Source::Screen {
             push(&["-shortest"]);
+            if kind == Kind::Record {
+                // -shortest alone lets the encoded audio run up to ~0.7 s past
+                // the last video frame (more when x264 lags); the muxer-level
+                // shortest ends the file within one AAC frame of the video.
+                // Live streams leave it out: the 100 s interleave window could
+                // buffer that long if a capture device stalls mid-stream.
+                push(&["-fflags", "+shortest", "-max_interleave_delta", "100M"]);
+            }
         }
     }
     match kind {
@@ -2415,9 +2423,26 @@ mod tests {
         assert!(!a.contains("thread_queue_size"));
         assert!(a.contains("anullsrc") && a.contains("-c:a aac") && a.contains("-shortest"));
         assert!(
+            a.contains("-shortest -fflags +shortest -max_interleave_delta 100M"),
+            "{a}"
+        );
+        assert!(
             a.contains("-c:v libx264")
                 && a.contains("yuv420p")
                 && a.ends_with("-movflags +faststart -f mp4 -y /tmp/x.mp4")
+        );
+        let live = build_args(
+            &c,
+            Kind::Live,
+            "rtmp://h/app/k",
+            Grab::X11,
+            AudioBackend::Pulse,
+        )
+        .expect("args")
+        .join(" ");
+        assert!(
+            live.contains("-shortest") && !live.contains("max_interleave_delta"),
+            "{live}"
         );
         c.audio = Audio::None;
         c.source = Source::Screen;
@@ -2764,9 +2789,34 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {k} in {vp}"))
         };
         assert_eq!(field("nb_frames=") as u64, w.frames_in, "{vp}");
+        let video = field("duration=");
         assert!(
-            (field("duration=") - frames_secs).abs() <= 1.0 / 30.0 + 1e-6,
+            (video - frames_secs).abs() <= 1.0 / 30.0 + 1e-6,
             "video {vp} vs {frames_secs:.3} s written"
+        );
+        // the silent track ends with the video, within one AAC frame
+        // (1024 samples at 48 kHz); the file is as long as its longer track
+        let o3 = Command::new(ffprobe_near(&ff))
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "default=nw=1:nk=1",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        let audio: f64 = String::from_utf8_lossy(&o3.stdout)
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("audio duration: {e} in {:?}", o3));
+        assert!(
+            (audio - video).abs() <= 1024.0 / 48_000.0 + 1e-6,
+            "audio {audio:.3} s vs video {video:.3} s: the silent track outran the frames"
         );
         if let Ok(out) = std::env::var("RECORD_TEST_OUT") {
             std::fs::copy(&path, out).unwrap();
