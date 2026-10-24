@@ -550,8 +550,12 @@ pub fn build_args(
 pub struct Stats {
     /// Frames written into ffmpeg's stdin.
     pub frames_in: u64,
-    /// Ticks skipped because the pipe/encoder was behind.
-    pub dropped: u64,
+    /// Ticks filled with the previous frame again because the pipe or
+    /// encoder was behind (no tick is skipped: ffmpeg stamps piped frames by
+    /// count, so a skipped tick would make the file shorter than real time).
+    pub repeated: u64,
+    /// Wall-clock seconds from the writer's first tick to the stop request.
+    pub span: f64,
     /// ffmpeg's own counters.
     pub enc_frames: u64,
     pub ffmpeg_drops: u64,
@@ -754,21 +758,28 @@ impl Session {
                 return;
             }
             let period = Duration::from_secs_f64(1.0 / fps);
-            let mut next = Instant::now();
+            let start = Instant::now();
+            // ticks written so far; tick n is due at start + n * period
+            let mut ticks: u64 = 0;
             let mut cache: Option<(usize, Vec<u8>)> = None;
             let black = letterbox(None, w, h);
-            while !stp.load(Ordering::Relaxed) {
+            loop {
+                let stopping = stp.load(Ordering::Relaxed);
                 let now = Instant::now();
-                if now < next {
-                    std::thread::sleep(next - now);
-                } else {
-                    let missed = ((now - next).as_secs_f64() / period.as_secs_f64()) as u32;
-                    if missed > 0 {
-                        if let Ok(mut s) = st.lock() {
-                            s.dropped += missed as u64;
-                        }
-                        next += period * missed;
+                // every tick due by now gets a frame: the file's length (frames
+                // / fps) follows the wall clock even when the encoder is slow
+                let due = (now.duration_since(start).as_secs_f64() * fps) as u64 + 1;
+                if stopping {
+                    if let Ok(mut s) = st.lock() {
+                        s.span = now.duration_since(start).as_secs_f64();
                     }
+                    if ticks >= due {
+                        break;
+                    }
+                } else if ticks >= due {
+                    let at = start + period.mul_f64(ticks as f64);
+                    std::thread::sleep(at.saturating_duration_since(now));
+                    continue;
                 }
                 let frame = frames.lock().ok().and_then(|f| f.clone());
                 let buf: &[u8] = match &frame {
@@ -781,18 +792,28 @@ impl Session {
                     }
                     None => &black,
                 };
-                if stdin.write_all(buf).is_err() {
-                    if let Ok(mut s) = st.lock() {
-                        if s.last_error.is_none() {
-                            s.last_error = Some("ffmpeg stopped accepting frames".into());
-                        }
+                let n = due - ticks;
+                let mut failed = false;
+                for _ in 0..n {
+                    if stdin.write_all(buf).is_err() {
+                        failed = true;
+                        break;
                     }
-                    break;
+                    ticks += 1;
                 }
                 if let Ok(mut s) = st.lock() {
-                    s.frames_in += 1;
+                    s.frames_in = ticks;
+                    s.repeated += n.saturating_sub(1);
+                    if failed && s.last_error.is_none() {
+                        s.last_error = Some("ffmpeg stopped accepting frames".into());
+                    }
                 }
-                next += period;
+                if failed {
+                    break;
+                }
+                if stopping {
+                    break;
+                }
             }
             // dropping stdin = EOF: ffmpeg flushes and finalises the file
         });
@@ -1123,7 +1144,10 @@ pub struct Status {
     pub reconnect_in: Option<f64>,
     pub fps: f32,
     pub kbps: f32,
+    /// Frames ffmpeg dropped.
     pub dropped: u64,
+    /// Ticks the writer filled with the previous frame (encoder behind).
+    pub repeated: u64,
     pub error: Option<String>,
 }
 
@@ -1774,7 +1798,8 @@ impl Output {
             let x = s.stats();
             st.fps = st.fps.max(x.fps);
             st.kbps += x.kbps;
-            st.dropped += x.dropped + x.ffmpeg_drops;
+            st.dropped += x.ffmpeg_drops;
+            st.repeated += x.repeated;
             if st.error.is_none() {
                 st.error = x.last_error;
             }
@@ -1953,6 +1978,9 @@ impl Output {
                     format!("{:.0} fps · {:.0} kb/s", st.fps, st.kbps),
                 );
                 theme::kv(ui, p, "Dropped frames", format!("{}", st.dropped));
+                // the encoder fell behind: these ticks got the previous frame
+                // again, so the recording keeps real time
+                theme::kv(ui, p, "Repeated frames", format!("{}", st.repeated));
                 ui.ctx().request_repaint_after(Duration::from_millis(250));
             }
             if let Some(r) = st.reconnect_in {
@@ -2677,6 +2705,7 @@ mod tests {
         let tmp = crate::test_dir::TestDir::new("rec_test");
         let path = tmp.path().join("rec.mp4");
         o.start_record(Some(path.clone())).unwrap();
+        let stats = o.rec.as_ref().unwrap().stats.clone();
         let t0 = Instant::now();
         let mut i = 0;
         while t0.elapsed() < Duration::from_secs(5) {
@@ -2688,6 +2717,17 @@ mod tests {
         let st = o.status();
         assert!(st.recording.unwrap() >= 5.0);
         let msg = o.stop_record().unwrap();
+        let w = stats.lock().unwrap().clone();
+        // every tick of wall time got a frame, however slow the encoder was
+        let frames_secs = w.frames_in as f64 / 30.0;
+        assert!(w.span >= 5.0, "{:?}", w);
+        assert!(
+            (frames_secs - w.span).abs() <= 1.0 / 30.0 + 1e-9,
+            "{} frames ({frames_secs:.3} s) for {:.3} s of wall time ({} repeated)",
+            w.frames_in,
+            w.span,
+            w.repeated
+        );
         assert!(msg.contains("saved"), "{}", msg);
         let p = probe(&ff, &path.to_string_lossy()).unwrap();
         assert!(
@@ -2702,6 +2742,32 @@ mod tests {
             .and_then(|d| d.parse().ok())
             .unwrap();
         assert!((4.5..=5.8).contains(&dur), "duration {} ({})", dur, p);
+        let o2 = Command::new(ffprobe_near(&ff))
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=duration,nb_frames",
+                "-of",
+                "default=nw=1",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        let vp = String::from_utf8_lossy(&o2.stdout).into_owned();
+        let field = |k: &str| -> f64 {
+            vp.lines()
+                .find_map(|l| l.strip_prefix(k))
+                .and_then(|d| d.parse().ok())
+                .unwrap_or_else(|| panic!("no {k} in {vp}"))
+        };
+        assert_eq!(field("nb_frames=") as u64, w.frames_in, "{vp}");
+        assert!(
+            (field("duration=") - frames_secs).abs() <= 1.0 / 30.0 + 1e-6,
+            "video {vp} vs {frames_secs:.3} s written"
+        );
         if let Ok(out) = std::env::var("RECORD_TEST_OUT") {
             std::fs::copy(&path, out).unwrap();
         }
