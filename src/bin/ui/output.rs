@@ -564,6 +564,10 @@ pub struct Stats {
     pub repeated: u64,
     /// Wall-clock seconds from the writer's first tick to the stop request.
     pub span: f64,
+    /// When the writer's tick 0 was due; tests check it is the session's
+    /// `started`, the clock the status bar shows.
+    #[cfg(test)]
+    pub origin: Option<Instant>,
     /// ffmpeg's own counters.
     pub enc_frames: u64,
     pub ffmpeg_drops: u64,
@@ -757,6 +761,9 @@ impl Session {
         let fps = cfg.fps.clamp(1, 120) as f64;
         let source = cfg.source;
         let (st, stp) = (stats.clone(), stop.clone());
+        // one clock for the file and the status bar: tick 0 is due now, not
+        // whenever the writer thread first gets the CPU
+        let started = Instant::now();
         let writer = std::thread::spawn(move || {
             if source == Source::Screen {
                 while !stp.load(Ordering::Relaxed) {
@@ -766,7 +773,11 @@ impl Session {
                 return;
             }
             let period = Duration::from_secs_f64(1.0 / fps);
-            let start = Instant::now();
+            let start = started;
+            #[cfg(test)]
+            if let Ok(mut s) = st.lock() {
+                s.origin = Some(start);
+            }
             // ticks written so far; tick n is due at start + n * period
             let mut ticks: u64 = 0;
             let mut cache: Option<(usize, Vec<u8>)> = None;
@@ -833,7 +844,7 @@ impl Session {
             kind,
             target_label,
             path: (kind == Kind::Record).then(|| PathBuf::from(target)),
-            started: Instant::now(),
+            started,
             child,
             relay,
             delay,
@@ -2730,7 +2741,10 @@ mod tests {
         let tmp = crate::test_dir::TestDir::new("rec_test");
         let path = tmp.path().join("rec.mp4");
         o.start_record(Some(path.clone())).unwrap();
+        // the test's own wall clock, from the started recording to the stop
+        let started = Instant::now();
         let stats = o.rec.as_ref().unwrap().stats.clone();
+        let session_started = o.rec.as_ref().unwrap().started;
         let t0 = Instant::now();
         let mut i = 0;
         while t0.elapsed() < Duration::from_secs(5) {
@@ -2741,8 +2755,12 @@ mod tests {
         }
         let st = o.status();
         assert!(st.recording.unwrap() >= 5.0);
+        let wall = started.elapsed().as_secs_f64();
         let msg = o.stop_record().unwrap();
         let w = stats.lock().unwrap().clone();
+        // the file's clock is the status bar's clock, not the writer
+        // thread's first time slice (late under load)
+        assert_eq!(w.origin, Some(session_started), "{:?}", w);
         // every tick of wall time got a frame, however slow the encoder was
         let frames_secs = w.frames_in as f64 / 30.0;
         assert!(w.span >= 5.0, "{:?}", w);
@@ -2793,6 +2811,11 @@ mod tests {
         assert!(
             (video - frames_secs).abs() <= 1.0 / 30.0 + 1e-6,
             "video {vp} vs {frames_secs:.3} s written"
+        );
+        assert!(
+            (video - wall).abs() <= 0.2,
+            "video {video:.3} s vs {wall:.3} s of wall time ({} repeated)",
+            w.repeated
         );
         // the silent track ends with the video, within one AAC frame
         // (1024 samples at 48 kHz); the file is as long as its longer track
