@@ -1162,7 +1162,7 @@ pub struct Output {
     cfg_path: PathBuf,
     #[cfg(test)]
     _cfg_dir: crate::test_dir::TestDir,
-    pub cameras: Option<Result<Vec<crate::camera::Device>, crate::camera::CameraError>>,
+    pub cameras: Option<Result<crate::camera::Listing, crate::camera::CameraError>>,
     /// A camera is there but the system blocks access (why); Settings ▸
     /// Output shows Approve and checks again until it opens.
     pub camera_blocked: Option<String>,
@@ -1401,14 +1401,48 @@ impl Output {
     }
 
     pub fn refresh_cameras(&mut self) {
-        let r = crate::camera::list();
+        self.set_cameras(crate::camera::list());
+    }
+
+    /// Take a scan's result. Blocked cameras keep (or start) the Approve
+    /// flow, naming each one; with no camera at all there is nothing to
+    /// approve. Otherwise blocked access found at open (Windows) stands
+    /// until a test open succeeds.
+    fn set_cameras(&mut self, r: Result<crate::camera::Listing, crate::camera::CameraError>) {
         match &r {
             Err(crate::camera::CameraError::Blocked(m)) => self.camera_blocked = Some(m.clone()),
-            // no camera at all: nothing to approve
-            Ok(l) if l.is_empty() => self.camera_blocked = None,
+            Ok(l) => {
+                if let Some(why) = l.blocked_why() {
+                    self.camera_blocked = Some(why);
+                } else if l.cameras.is_empty() {
+                    self.camera_blocked = None;
+                }
+            }
             _ => {}
         }
         self.cameras = Some(r);
+    }
+
+    /// The camera picker's entries: (label, hover text, selectable). Usable
+    /// cameras first, then each blocked or failing node, named, so nothing
+    /// is hidden.
+    fn camera_rows(&self) -> Vec<(String, String, bool)> {
+        let Some(Ok(l)) = &self.cameras else {
+            return vec![];
+        };
+        let cams = l
+            .cameras
+            .iter()
+            .map(|d| (d.name.clone(), d.path.clone(), true));
+        let blocked = l
+            .blocked
+            .iter()
+            .map(|u| (format!("{} (access blocked)", u.path), u.why.clone(), false));
+        let failed = l
+            .failed
+            .iter()
+            .map(|u| (format!("{} (can't open)", u.path), u.why.clone(), false));
+        cams.chain(blocked).chain(failed).collect()
     }
 
     /// While camera access is blocked: check again every 2 s, and at once
@@ -1429,7 +1463,9 @@ impl Output {
     pub fn recheck_camera_access(&mut self) {
         self.camera_checked = Some(Instant::now());
         self.refresh_cameras();
-        if self.camera_blocked.is_some() && matches!(&self.cameras, Some(Ok(l)) if !l.is_empty()) {
+        if self.camera_blocked.is_some()
+            && matches!(&self.cameras, Some(Ok(l)) if !l.cameras.is_empty())
+        {
             let _ = self.camera_frames();
             self.release_camera();
         }
@@ -2039,15 +2075,10 @@ impl Output {
                     if ui.selectable_label(cur.is_empty(), FIRST).clicked() {
                         pick = Some(String::new());
                     }
-                    if let Some(Ok(list)) = &self.cameras {
-                        for d in list {
-                            if ui
-                                .selectable_label(cur == d.name, &d.name)
-                                .on_hover_text(&d.path)
-                                .clicked()
-                            {
-                                pick = Some(d.name.clone());
-                            }
+                    for (label, hover, usable) in self.camera_rows() {
+                        let row = egui::Button::selectable(usable && cur == label, &label);
+                        if ui.add_enabled(usable, row).on_hover_text(hover).clicked() {
+                            pick = Some(label);
                         }
                     }
                 });
@@ -2068,11 +2099,19 @@ impl Output {
             Some(Err(crate::camera::CameraError::Failed(e))) => {
                 ui.add(egui::Label::new(egui::RichText::new(e).size(11.0).color(p.danger)).wrap());
             }
-            Some(Ok(l)) if l.is_empty() => {
-                ui.label(theme::muted(
-                    p,
-                    "No camera found. Plug one in and press Refresh.",
-                ));
+            Some(Ok(l)) => {
+                for u in &l.failed {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&u.why).size(11.0).color(p.danger))
+                            .wrap(),
+                    );
+                }
+                if l == &crate::camera::Listing::default() {
+                    ui.label(theme::muted(
+                        p,
+                        "No camera found. Plug one in and press Refresh.",
+                    ));
+                }
             }
             _ => {}
         }
@@ -2697,6 +2736,103 @@ mod tests {
         drop(o);
         assert!(!path.exists(), "{} left behind", path.display());
         assert!(!path.parent().unwrap().exists());
+    }
+
+    /// Usable and blocked cameras together: the picker lists the usable
+    /// camera and names each blocked node, and the panel shows each blocked
+    /// node's reason with Approve. Real nodes: a readable one and two the
+    /// user can't open (see camera.rs for why the usable camera is built).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn settings_list_usable_cameras_and_name_each_blocked_one() {
+        use crate::camera::tests::{blocked_why, locked_node, mixed_listing};
+        let dir = crate::test_dir::TestDir::new("output_mixed_cameras");
+        let readable = dir.path().join("video1");
+        std::fs::write(&readable, b"").unwrap();
+        let locked = [locked_node(&dir, "video2"), locked_node(&dir, "video3")];
+        let probes = [&readable, &locked[0], &locked[1]]
+            .iter()
+            .map(|p| {
+                let p = p.to_string_lossy().into_owned();
+                let r = crate::camera::v4l2::probe(&p);
+                (p, r)
+            })
+            .collect();
+        let usable = crate::camera::Device {
+            name: "USB Cam".into(),
+            path: "/dev/video0".into(),
+        };
+        let mut o = Output::new(
+            OutputConfig {
+                source: Source::Camera,
+                ..Default::default()
+            },
+            String::new(),
+        );
+        o.set_cameras(Ok(mixed_listing(usable, probes)));
+        let whys: Vec<String> = locked.iter().map(|l| blocked_why(l)).collect();
+        assert_eq!(o.camera_blocked, Some(whys.join("\n")));
+        let path = |l: &std::path::PathBuf| l.to_string_lossy().into_owned();
+        assert_eq!(
+            o.camera_rows(),
+            vec![
+                ("USB Cam".to_string(), "/dev/video0".to_string(), true),
+                (
+                    format!("{} (access blocked)", path(&locked[0])),
+                    whys[0].clone(),
+                    false
+                ),
+                (
+                    format!("{} (access blocked)", path(&locked[1])),
+                    whys[1].clone(),
+                    false
+                ),
+            ]
+        );
+        // the panel: no re-scan of the real /dev during the frame
+        o.camera_checked = Some(Instant::now());
+        o.was_focused = true;
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 1400.0),
+            )),
+            ..Default::default()
+        };
+        let mut bus = Vec::new();
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                o.settings_ui(ui, &Palette::dark(), &mut bus);
+            });
+        });
+        let texts: String = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        for w in &whys {
+            assert!(texts.contains(w.as_str()), "{w} not shown: {texts}");
+        }
+        assert!(texts.contains("Approve"), "{texts}");
+        assert!(!texts.contains("No camera found"), "{texts}");
+        // the blocked nodes get approved: the camera list stays, and the
+        // Approve flow waits for a test open of the usable camera
+        o.set_cameras(Ok(crate::camera::Listing {
+            cameras: vec![crate::camera::Device {
+                name: "USB Cam".into(),
+                path: "/dev/video0".into(),
+            }],
+            ..Default::default()
+        }));
+        assert!(o.camera_blocked.is_some());
+        // all gone: nothing left to approve
+        o.set_cameras(Ok(crate::camera::Listing::default()));
+        assert_eq!(o.camera_blocked, None);
     }
 
     /// Blocked camera access is checked again every 2 s, and at once when

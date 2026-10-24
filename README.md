@@ -206,7 +206,11 @@ refused as unsupported for now.
 
 **Blocked camera access** (spec). When a camera exists but the system won't
 let the app use it, Settings ▸ Output says why and offers **Approve**;
-"No camera found" appears only when there is no camera at all. Blocked means
+"No camera found" appears only when there is no camera at all. Nothing is
+hidden: with some cameras usable and others blocked, the picker lists the
+usable ones and names each blocked node (greyed, "access blocked", with its
+reason), and the panel shows every blocked node's reason with **Approve**; a
+node that fails to open for another reason is named too. Blocked means
 permission denied on the `/dev/videoN` node on Linux (the user isn't in the
 `video` group), or E_ACCESSDENIED when Media Foundation activates the camera
 on Windows (Settings ▸ Privacy & security ▸ Camera has desktop-app access
@@ -218,6 +222,10 @@ then a test open, since Windows only refuses at open), and says so once the
 camera opens. macOS: planned with AVFoundation. Tests:
 `v4l2_list_reports_a_node_it_is_not_allowed_to_open` (a real mode-000 node
 is blocked, an empty folder is "no camera"),
+`v4l2_list_shows_usable_and_blocked_cameras_together` and
+`settings_list_usable_cameras_and_name_each_blocked_one` (a real readable
+node and real mode-000 nodes next to a usable camera; no V4L2 camera exists
+on the dev box, so that one is a `Device` as the capability query returns it),
 `windows_access_denied_at_activation_is_blocked_access`,
 `approve_on_windows_opens_the_camera_privacy_page`,
 `blocked_camera_access_is_rechecked_on_a_timer_and_on_focus`.

@@ -139,6 +139,62 @@ pub fn choose<'a>(devices: &'a [Device], want: &str) -> Result<&'a Device, Strin
         })
 }
 
+/// What a camera scan found. Nothing is dropped: cameras the user may
+/// not open and nodes that failed are named alongside the usable ones.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Listing {
+    pub cameras: Vec<Device>,
+    /// Cameras that are there but blocked (see [`CameraError::Blocked`]).
+    pub blocked: Vec<Unusable>,
+    /// Nodes that couldn't be opened for another reason.
+    pub failed: Vec<Unusable>,
+}
+
+/// A device node that is listed but can't be used, and why (the message
+/// names the node).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unusable {
+    pub path: String,
+    pub why: String,
+}
+
+impl Listing {
+    /// Sorts each node's probe: a camera, not a camera (skipped: a
+    /// metadata or output node), or why it couldn't be opened.
+    #[cfg(any(target_os = "linux", test))]
+    pub fn from_probes(
+        probes: impl IntoIterator<Item = (String, Result<Option<Device>, CameraError>)>,
+    ) -> Self {
+        let mut l = Listing::default();
+        for (path, p) in probes {
+            match p {
+                Ok(Some(d)) => l.cameras.push(d),
+                Ok(None) => {}
+                Err(CameraError::Blocked(why)) => l.blocked.push(Unusable { path, why }),
+                Err(CameraError::Failed(why)) => l.failed.push(Unusable { path, why }),
+            }
+        }
+        l
+    }
+
+    /// Every blocked camera's reason, one per line.
+    pub fn blocked_why(&self) -> Option<String> {
+        let w: Vec<&str> = self.blocked.iter().map(|u| u.why.as_str()).collect();
+        (!w.is_empty()).then(|| w.join("\n"))
+    }
+
+    /// The camera `want` names (see [`choose`]). With none to pick,
+    /// blocked cameras make it `Blocked`, so Approve is offered.
+    pub fn pick(&self, want: &str) -> Result<&Device, CameraError> {
+        choose(&self.cameras, want).map_err(|e| match self.blocked_why() {
+            None => CameraError::Failed(e),
+            // a camera is there, just blocked: not "no camera found"
+            Some(why) if self.cameras.is_empty() => CameraError::Blocked(why.replace('\n', "; ")),
+            Some(why) => CameraError::Blocked(format!("{e}; {}", why.replace('\n', "; "))),
+        })
+    }
+}
+
 /// A camera being read on its own thread. The newest frame sits in
 /// `frames`, where recording, streaming and the Settings preview read it.
 pub struct Feed {
@@ -156,8 +212,7 @@ impl Feed {
     /// Open the camera named by `want` (see [`choose`]) at about
     /// `width`×`height` and start reading. Fails if it can't be opened.
     pub fn start(want: &str, width: u32, height: u32) -> Result<Feed, CameraError> {
-        let devices = list()?;
-        let device = choose(&devices, want)?.clone();
+        let device = list()?.pick(want)?.clone();
         let dev = device.clone();
         Self::spawn(device, move || Camera::open(&dev, width, height))
     }
@@ -409,7 +464,7 @@ const UNSUPPORTED: &str =
     "Camera capture isn't supported on this OS yet (Windows and Linux only). Pick Canvas or Screen in Settings ▸ Output.";
 
 #[cfg(not(any(target_os = "linux", windows)))]
-pub fn list() -> Result<Vec<Device>, CameraError> {
+pub fn list() -> Result<Listing, CameraError> {
     Err(UNSUPPORTED.into())
 }
 
@@ -428,12 +483,12 @@ impl Camera {
 }
 
 #[cfg(target_os = "linux")]
-mod v4l2 {
+pub(crate) mod v4l2 {
     //! Video4Linux2 streaming capture through mmap'd buffers. Struct
     //! layouts follow `<linux/videodev2.h>`; ioctl numbers are derived
     //! from the struct sizes, like the C macros.
 
-    use super::{CameraError, Device, Raster};
+    use super::{CameraError, Device, Listing, Raster};
     use std::ffi::CString;
     use std::os::raw::{c_int, c_ulong, c_void};
     use std::time::Duration;
@@ -622,7 +677,7 @@ mod v4l2 {
 
     /// Every `/dev/videoN` that can stream video capture (metadata and
     /// output nodes are skipped).
-    pub fn list() -> Result<Vec<Device>, CameraError> {
+    pub fn list() -> Result<Listing, CameraError> {
         list_in(std::path::Path::new("/dev"))
     }
 
@@ -638,10 +693,18 @@ mod v4l2 {
         }
     }
 
-    /// [`list`] over the `videoN` nodes in `dir`. A node that can't be
-    /// opened is not skipped silently: with no usable camera the error
-    /// names it, as `Blocked` if any node was refused for permissions.
-    pub(super) fn list_in(dir: &std::path::Path) -> Result<Vec<Device>, CameraError> {
+    /// One node: a camera (`Some`), something else (`None`), or why it
+    /// can't be opened.
+    pub(crate) fn probe(path: &str) -> Result<Option<Device>, CameraError> {
+        let fd = open_fd(path).map_err(|e| open_error(path, e))?;
+        Ok(query(&fd, path).ok().map(|name| Device {
+            name,
+            path: path.into(),
+        }))
+    }
+
+    /// [`list`] over the `videoN` nodes in `dir`, every node accounted for.
+    pub(super) fn list_in(dir: &std::path::Path) -> Result<Listing, CameraError> {
         let mut nodes: Vec<(u32, String)> = std::fs::read_dir(dir)
             .map_err(|e| format!("can't read {}: {e}", dir.display()))?
             .filter_map(|e| {
@@ -651,31 +714,9 @@ mod v4l2 {
             })
             .collect();
         nodes.sort();
-        let mut found = Vec::new();
-        let mut failed = Vec::new();
-        for (_, path) in nodes {
-            match open_fd(&path) {
-                Ok(fd) => {
-                    if let Ok(name) = query(&fd, &path) {
-                        found.push(Device { name, path });
-                    }
-                }
-                Err(e) => failed.push(open_error(&path, e)),
-            }
-        }
-        if !found.is_empty() || failed.is_empty() {
-            return Ok(found);
-        }
-        let msg = failed
-            .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("; ");
-        if failed.iter().any(|e| matches!(e, CameraError::Blocked(_))) {
-            Err(CameraError::Blocked(msg))
-        } else {
-            Err(CameraError::Failed(msg))
-        }
+        Ok(Listing::from_probes(
+            nodes.into_iter().map(|(_, p)| (p.clone(), probe(&p))),
+        ))
     }
 
     struct Map {
@@ -854,7 +895,7 @@ mod mf {
     //! turned on, so every camera (YUY2, NV12, MJPEG) arrives as RGB32.
     //! COM is initialised (multithreaded) on the thread that uses it.
 
-    use super::{CameraError, Device, Raster};
+    use super::{CameraError, Device, Listing, Raster};
     use std::time::Duration;
     use windows::core::{Interface, GUID, PWSTR};
     use windows::Win32::Media::MediaFoundation::*;
@@ -935,14 +976,20 @@ mod mf {
 
     /// Video capture devices. Runs on its own thread so the caller's COM
     /// apartment (the UI thread is single-threaded) doesn't matter.
-    pub fn list() -> Result<Vec<Device>, CameraError> {
-        std::thread::spawn(|| -> Result<Vec<Device>, String> {
+    /// Windows refuses blocked access only at activation (see
+    /// `activate_error`), so the list has no blocked entries.
+    pub fn list() -> Result<Listing, CameraError> {
+        let cameras = std::thread::spawn(|| -> Result<Vec<Device>, String> {
             let _mf = Mf::start()?;
             Ok(devices()?.into_iter().map(|(d, _)| d).collect())
         })
         .join()
         .map_err(|_| "camera enumeration panicked".to_string())?
-        .map_err(CameraError::Failed)
+        .map_err(CameraError::Failed)?;
+        Ok(Listing {
+            cameras,
+            ..Listing::default()
+        })
     }
 
     /// An open camera. Use it on the thread that opened it.
@@ -1306,41 +1353,125 @@ pub(crate) mod tests {
         assert!(list().is_ok());
     }
 
-    /// A videoN node the user may not open is reported, not skipped: with
-    /// no usable camera the error names the node and the fix. A readable
-    /// node that is not a camera is still skipped quietly.
+    /// A videoN node the user may not open is reported, not skipped: the
+    /// listing names the node and the fix. A readable node that is not a
+    /// camera is still skipped quietly.
     #[cfg(target_os = "linux")]
     #[test]
     fn v4l2_list_reports_a_node_it_is_not_allowed_to_open() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = crate::test_dir::TestDir::new("v4l2_nodes");
-        let locked = dir.path().join("video0");
-        std::fs::write(&locked, b"").unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let locked = locked_node(&dir, "video0");
         std::fs::write(dir.path().join("video1"), b"").unwrap();
         std::fs::write(dir.path().join("videoX"), b"").unwrap();
-        if std::fs::File::open(&locked).is_ok() {
-            // root ignores file modes, so there is nothing to refuse
-            eprintln!(
-                "skipped: running as root, {} opens anyway",
-                locked.display()
-            );
-            return;
-        }
-        let why = format!(
-            "Permission denied on {}: your user isn't allowed to use cameras (not in the video group)",
-            locked.display()
-        );
+        let why = blocked_why(&locked);
         // blocked, not absent: listing and opening both say why
+        let l = v4l2::list_in(dir.path()).unwrap();
         assert_eq!(
-            v4l2::list_in(dir.path()),
-            Err(CameraError::Blocked(why.clone()))
+            l,
+            Listing {
+                blocked: vec![unusable(&locked, &why)],
+                ..Listing::default()
+            }
         );
+        assert_eq!(l.pick(""), Err(CameraError::Blocked(why.clone())));
         let opened = Camera::open_path(&locked.to_string_lossy(), 64, 48).err();
         assert_eq!(opened, Some(CameraError::Blocked(why)));
         // absent: nothing to approve, just "No camera found"
         std::fs::remove_file(&locked).unwrap();
-        assert_eq!(v4l2::list_in(dir.path()), Ok(vec![]));
+        assert_eq!(v4l2::list_in(dir.path()), Ok(Listing::default()));
+    }
+
+    /// A usable camera followed by real probed nodes.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn mixed_listing(
+        usable: Device,
+        probes: Vec<(String, Result<Option<Device>, CameraError>)>,
+    ) -> Listing {
+        Listing::from_probes(std::iter::once((usable.path.clone(), Ok(Some(usable)))).chain(probes))
+    }
+
+    /// A mode-000 `name` in `dir`, which this user can't open.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn locked_node(dir: &crate::test_dir::TestDir, name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = dir.path().join(name);
+        std::fs::write(&locked, b"").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            std::fs::File::open(&locked).is_err(),
+            "{} opens anyway: this test needs a user that file modes apply to (not root)",
+            locked.display()
+        );
+        locked
+    }
+
+    #[cfg(target_os = "linux")]
+    fn unusable(node: &std::path::Path, why: &str) -> Unusable {
+        Unusable {
+            path: node.to_string_lossy().into_owned(),
+            why: why.into(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn blocked_why(node: &std::path::Path) -> String {
+        format!(
+            "Permission denied on {}: your user isn't allowed to use cameras (not in the video group)",
+            node.display()
+        )
+    }
+
+    /// Usable and blocked cameras together: the usable ones are listed and
+    /// each blocked one is named; nothing is hidden. The nodes are real: a
+    /// readable one (opened, then skipped: a plain file answers no
+    /// VIDIOC_QUERYCAP) and an unreadable one. No V4L2 camera exists on
+    /// the dev box, so the usable camera is a Device as `query` returns it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn v4l2_list_shows_usable_and_blocked_cameras_together() {
+        let dir = crate::test_dir::TestDir::new("v4l2_mixed");
+        let readable = dir.path().join("video1");
+        std::fs::write(&readable, b"").unwrap();
+        let locked = locked_node(&dir, "video2");
+        let locked2 = locked_node(&dir, "video3");
+        let probes: Vec<_> = [&readable, &locked, &locked2]
+            .iter()
+            .map(|p| {
+                let p = p.to_string_lossy().into_owned();
+                let r = v4l2::probe(&p);
+                (p, r)
+            })
+            .collect();
+        assert_eq!(probes[0].1, Ok(None), "readable node opens");
+        let usable = dev("USB Cam", "/dev/video0");
+        let l = mixed_listing(usable.clone(), probes);
+        assert_eq!(
+            l,
+            Listing {
+                cameras: vec![usable.clone()],
+                blocked: vec![
+                    unusable(&locked, &blocked_why(&locked)),
+                    unusable(&locked2, &blocked_why(&locked2)),
+                ],
+                failed: vec![],
+            }
+        );
+        assert_eq!(
+            l.blocked_why().unwrap(),
+            format!("{}\n{}", blocked_why(&locked), blocked_why(&locked2))
+        );
+        assert_eq!(l.pick(""), Ok(&usable));
+        assert_eq!(
+            l.pick("Other"),
+            Err(CameraError::Blocked(format!(
+                "camera 'Other' not found (available: USB Cam); {}; {}",
+                blocked_why(&locked),
+                blocked_why(&locked2)
+            )))
+        );
+        // and from the folder scan itself
+        let scanned = v4l2::list_in(dir.path()).unwrap();
+        assert_eq!(scanned.blocked, l.blocked);
     }
 
     #[test]
@@ -1391,8 +1522,7 @@ pub(crate) mod tests {
     #[ignore = "needs a V4L2 device (v4l2loopback); the dev box's Firecracker kernel has no media support"]
     fn v4l2_reads_frames_from_a_real_device() {
         let path = std::env::var("SERAPHINA_TEST_CAMERA").unwrap_or("/dev/video0".into());
-        let devices = list().unwrap();
-        let d = choose(&devices, &path).unwrap().clone();
+        let d = list().unwrap().pick(&path).unwrap().clone();
         let f = Feed::start(&d.path, 640, 480).unwrap();
         assert!(f.size.0 > 0 && f.size.1 > 0);
         std::thread::sleep(Duration::from_secs(1));
@@ -1412,7 +1542,8 @@ pub(crate) mod tests {
     #[test]
     fn media_foundation_lists_cameras() {
         let l = list().expect("MFEnumDeviceSources");
-        for d in &l {
+        assert!(l.blocked.is_empty() && l.failed.is_empty(), "{l:?}");
+        for d in &l.cameras {
             assert!(!d.name.is_empty() && !d.path.is_empty(), "{d:?}");
         }
     }
