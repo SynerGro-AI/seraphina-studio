@@ -518,7 +518,10 @@ fn a_plain_release_build_makes_the_exe_the_readme_names() {
         ci.contains("- run: cargo build --locked --release\n"),
         "CI does not run the README's plain release build"
     );
-    assert!(ci.contains("copy target\\release\\ui.exe "));
+    assert!(
+        ci.contains("./packaging/windows/stage.ps1 -Dest pkg -Exe target/release/ui.exe"),
+        "CI does not package the exe the README's build makes"
+    );
 }
 
 /// packaging/windows/README.txt promises the exe needs no Visual C++
