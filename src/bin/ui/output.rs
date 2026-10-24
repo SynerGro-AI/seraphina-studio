@@ -3351,7 +3351,27 @@ mod tests {
         c.is_file().then_some(c)
     }
 
-    fn start_mediamtx(bin: &Path, port: u16) -> Child {
+    /// A running mediamtx and its config folder. Dropping it (also when the
+    /// test fails) stops the server, then removes the folder.
+    struct Mtx {
+        child: Child,
+        _dir: crate::test_dir::TestDir,
+    }
+
+    impl Mtx {
+        fn kill(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    impl Drop for Mtx {
+        fn drop(&mut self) {
+            self.kill();
+        }
+    }
+
+    fn start_mediamtx(bin: &Path, port: u16) -> Mtx {
         let c = spawn_mediamtx(
             bin,
             "reconnect",
@@ -3363,17 +3383,17 @@ mod tests {
 
     /// mediamtx with only the given settings on top of a quiet base config
     /// (no RTSP/HLS/WebRTC/SRT). `tag` keeps parallel tests' configs apart.
-    fn spawn_mediamtx(bin: &Path, tag: &str, settings: &str) -> Child {
-        let dir = std::env::temp_dir().join(format!("mtx_{}_{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mediamtx config dir");
-        let yml = dir.join("mediamtx.yml");
+    fn spawn_mediamtx(bin: &Path, tag: &str, settings: &str) -> Mtx {
+        let dir = crate::test_dir::TestDir::new(&format!("mtx_{tag}"));
+        let yml = dir.path().join("mediamtx.yml");
         std::fs::write(&yml, format!("logLevel: warn\nmetrics: no\npprof: no\nplayback: no\nrtsp: no\nhls: no\nwebrtc: no\nsrt: no\n{settings}")).expect("write mediamtx.yml");
-        Command::new(bin)
+        let child = Command::new(bin)
             .arg(&yml)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn mediamtx")
+            .expect("spawn mediamtx");
+        Mtx { child, _dir: dir }
     }
 
     fn free_port() -> u16 {
@@ -3501,8 +3521,8 @@ mod tests {
             "key leaked into a message: {ev:?}"
         );
         let _ = o.stop_live();
-        let _ = server.kill();
-        let _ = server.wait();
+        server.kill();
+        crate::test_dir::fail_late();
     }
 
     /// Streams to a local mediamtx RTMP server, confirms receipt with
@@ -3559,8 +3579,7 @@ mod tests {
         );
 
         // drop the server: ffmpeg dies, a reconnect is scheduled with backoff
-        let _ = server.kill();
-        let _ = server.wait();
+        server.kill();
         feed(&mut o, 4.0, &mut ev);
         assert!(
             ev.iter()
@@ -3588,8 +3607,8 @@ mod tests {
         assert!(p.contains("codec_name=h264"), "after reconnect: {}", p);
         o.stop_live().unwrap();
         assert!(!o.is_live());
-        let _ = server.kill();
-        let _ = server.wait();
+        server.kill();
+        crate::test_dir::fail_late();
     }
 
     /// Goes through Output::start_record → Session::spawn → build_args, the
