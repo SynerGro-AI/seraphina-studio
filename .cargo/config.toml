@@ -1,7 +1,7 @@
 # Link the C runtime into the Windows (MSVC) exe so it runs without the
 # Visual C++ Redistributable, as packaging/windows/README.txt says. This file
-# is the only place that sets it: local builds, ci.yml and the release
-# workflow all pick it up. A RUSTFLAGS environment variable would replace
+# is the only place that sets it: local builds and ci.yml pick it up, and
+# so will the planned release workflow (not in the repo yet). A RUSTFLAGS environment variable would replace
 # it, so no workflow sets one.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

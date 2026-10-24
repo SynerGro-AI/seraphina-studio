@@ -1,6 +1,7 @@
 # Copies the Windows zip's files, listed in zip-files.txt next to this
 # script, to the top of -Dest. Zipping -Dest's contents gives the zip:
-# ci.yml uploads -Dest as the windows-ui artifact and release.yml zips it.
+# ci.yml uploads -Dest as the windows-ui artifact. A planned release workflow
+# (not in the repo yet) is to zip the same folder.
 param(
   [Parameter(Mandatory)] [string] $Dest,
   [Parameter(Mandatory)] [string] $Exe,

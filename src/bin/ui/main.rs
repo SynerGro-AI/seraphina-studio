@@ -3730,7 +3730,7 @@ mod tests {
         assert_eq!(listed, inside.len(), "README.txt lists files the zip lacks");
     }
 
-    /// Runs packaging/windows/stage.ps1, as both workflows do, and checks
+    /// Runs packaging/windows/stage.ps1, as ci.yml's windows-ui job does, and checks
     /// the folder that becomes the zip root.
     #[test]
     #[cfg_attr(

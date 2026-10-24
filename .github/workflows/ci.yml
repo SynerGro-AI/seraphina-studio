@@ -84,7 +84,7 @@ jobs:
       - run: cargo test --locked --lib
       - run: cargo test --locked --bin ui
       # Keeps the mingw cross-build working. The exe that ships comes from
-      # the MSVC build (windows-ui here, the windows job in release.yml),
+      # the MSVC build (windows-ui here; a release workflow is planned),
       # with the C runtime linked in by .cargo/config.toml.
       - run: cargo build --locked --release --target x86_64-pc-windows-gnu
 
@@ -103,9 +103,10 @@ jobs:
       # packaging/windows/zip-files.txt lists the zip's files; stage.ps1
       # copies them to the top of pkg/, and uploading that one folder puts
       # its contents at the zip root, so README.txt, LICENSE and SOURCE.txt
-      # sit next to SeraphinaStudio.exe (the release zip uses the same
-      # script). Listing files from several folders here would root the zip
-      # at their common parent instead (packaging/windows/README.txt).
+      # sit next to SeraphinaStudio.exe (a planned release zip is to use
+      # the same script). Listing files from several folders here would
+      # root the zip at their common parent instead
+      # (packaging/windows/README.txt).
       - run: >-
           ./packaging/windows/stage.ps1 -Dest pkg -Exe target/release/ui.exe
           -Ref "${{ github.ref_name }}" -Sha "${{ github.sha }}" -Repo "${{ github.repository }}"

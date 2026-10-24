@@ -526,8 +526,9 @@ fn a_plain_release_build_makes_the_exe_the_readme_names() {
 
 /// packaging/windows/README.txt promises the exe needs no Visual C++
 /// Redistributable. That holds only if the MSVC build links the C runtime
-/// in, which .cargo/config.toml does for every build (local, ci.yml,
-/// release.yml); a RUSTFLAGS variable in CI would silently replace it.
+/// in, which .cargo/config.toml does for every build (local, ci.yml and
+/// the planned release workflow, not in the repo yet); a RUSTFLAGS variable
+/// in CI would silently replace it.
 #[test]
 fn the_msvc_build_links_the_c_runtime_the_package_readme_promises() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -635,7 +636,7 @@ fn pe_imports(b: &[u8]) -> Vec<String> {
     out
 }
 
-/// The MSVC build (CI's windows-ui job, release.yml): this test exe, built
+/// The MSVC build (CI's windows-ui job; later the planned release workflow): this test exe, built
 /// with the same flags as the app, must not import the VC++ / Universal C
 /// runtime DLLs. Only for MSVC: the mingw build links the C runtime its
 /// own way, so passing there would say nothing about the shipped exe.

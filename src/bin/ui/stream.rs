@@ -10,9 +10,9 @@ use obs_rust_bitstream::stream_inspect::{sample_stream, to_binary, CounterMode, 
 use obs_rust_bitstream::ui_canvas::Raster;
 
 pub const WIDTHS: [u32; 7] = [1, 2, 3, 4, 5, 8, 16];
-/// Opened at startup; shipped next to the exe in the release zip.
+/// Opened at startup; shipped next to the exe in the Windows zip.
 pub const STARTUP_SAMPLE: &str = "out.obsr";
-/// Default path in the Open box; shipped next to the exe in the release zip.
+/// Default path in the Open box; shipped next to the exe in the Windows zip.
 pub const DEFAULT_OPEN: &str = "out.h264";
 /// Every file named here must ship next to the exe (tested in main.rs).
 pub const OPEN_HINT: &str = "Try out.h264 or out.obsr, next to the app or in the repo root.";

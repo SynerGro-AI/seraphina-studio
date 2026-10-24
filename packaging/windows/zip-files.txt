@@ -3,7 +3,7 @@
 # ui.exe); a .in file has {{REF}} {{SHA}} {{REPO}} {{REPO_NAME}} filled in.
 # A path ending in / is a folder: <from> is a folder or a glob.
 # stage.ps1 copies these to the top of a folder that becomes the zip root,
-# for ci.yml's windows-ui artifact and for the release zip, so the docs sit
+# for ci.yml's windows-ui artifact (and a planned release zip), so the docs sit
 # next to the exe. The ui tests check this list against ci.yml and
 # README.txt's FILES IN THIS FOLDER, and run stage.ps1.
 SeraphinaStudio.exe   $EXE
