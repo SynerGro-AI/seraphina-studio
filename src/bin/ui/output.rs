@@ -1412,14 +1412,27 @@ impl Output {
                 return Err(e.into());
             }
         };
-        if self.camera_blocked.take().is_some() {
+        Ok(self.adopt_camera(feed))
+    }
+
+    /// Use a camera that just opened. Blocked access counts as approved
+    /// only when the last scan names no blocked node: with one camera usable
+    /// and another still blocked, Approve and the reasons stay.
+    fn adopt_camera(&mut self, feed: crate::camera::Feed) -> FrameSlot {
+        let still_blocked = match &self.cameras {
+            Some(Ok(l)) => l.blocked_why(),
+            _ => None,
+        };
+        if let Some(why) = still_blocked {
+            self.camera_blocked = Some(why);
+        } else if self.camera_blocked.take().is_some() {
             self.camera_fix_shown = false;
             self.events.push((
                 ToastKind::Success,
                 "Camera access approved; the camera opens now.".into(),
             ));
         }
-        Ok(self.camera.insert(feed).frames.clone())
+        self.camera.insert(feed).frames.clone()
     }
 
     /// Show or hide the camera preview in Settings ▸ Output.
@@ -2975,6 +2988,87 @@ mod tests {
         // all gone: nothing left to approve
         o.set_cameras(Ok(crate::camera::Listing::default()));
         assert_eq!(o.camera_blocked, None);
+    }
+
+    /// One camera usable, others blocked: opening the usable one (what the
+    /// 2 s recheck does) must not announce "approved" or drop Approve while
+    /// a node is still blocked. Real mode-000 nodes give the blocked
+    /// reasons, and the opened camera is a real Feed playing recorded
+    /// frames. Once the scan names no blocked node, the next open approves.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn opening_a_usable_camera_keeps_approve_while_another_is_blocked() {
+        use crate::camera::tests::{blocked_why, locked_node, mixed_listing, rerun_as_nobody};
+        if rerun_as_nobody(
+            "output::tests::opening_a_usable_camera_keeps_approve_while_another_is_blocked",
+        ) {
+            return;
+        }
+        let dir = crate::test_dir::TestDir::new("output_mixed_open");
+        let locked = locked_node(&dir, "video2");
+        let p = locked.to_string_lossy().into_owned();
+        let probes = vec![(p.clone(), crate::camera::v4l2::probe(&p))];
+        let usable = crate::camera::Device {
+            name: "USB Cam".into(),
+            path: "/dev/video0".into(),
+        };
+        let mut o = Output::new(
+            OutputConfig {
+                source: Source::Camera,
+                ..Default::default()
+            },
+            String::new(),
+        );
+        o.set_cameras(Ok(mixed_listing(usable.clone(), probes)));
+        let why = blocked_why(&locked);
+        assert_eq!(o.camera_blocked, Some(why.clone()));
+        o.adopt_camera(recorded_camera(None));
+        assert_eq!(o.camera_blocked, Some(why.clone()), "still blocked");
+        let approved = |o: &Output| {
+            o.events
+                .iter()
+                .any(|(k, m)| *k == ToastKind::Success && m.contains("approved"))
+        };
+        assert!(!approved(&o), "{:?}", o.events);
+        // the panel still shows the reason and Approve
+        o.camera_checked = Some(Instant::now());
+        o.was_focused = true;
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 1400.0),
+            )),
+            ..Default::default()
+        };
+        let mut bus = Vec::new();
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                o.settings_ui(ui, &Palette::dark(), &mut bus);
+            });
+        });
+        let texts: String = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(texts.contains(why.as_str()), "{why} not shown: {texts}");
+        assert!(texts.contains("Approve"), "{texts}");
+        // the node gets approved: the next scan lists only the usable camera,
+        // and the next open says so
+        o.set_cameras(Ok(crate::camera::Listing {
+            cameras: vec![usable],
+            ..Default::default()
+        }));
+        assert!(o.camera_blocked.is_some(), "waits for a test open");
+        o.adopt_camera(recorded_camera(None));
+        assert_eq!(o.camera_blocked, None);
+        assert!(approved(&o), "{:?}", o.events);
+        crate::test_dir::fail_late();
     }
 
     /// Blocked camera access is checked again every 2 s, and at once when
