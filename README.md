@@ -256,7 +256,12 @@ approved, or unplugged) ends Approve, the reason and the rechecks, with the
 same "approved" message. With one camera usable and another blocked,
 opening the usable one doesn't count as approved, and an open counts only
 after a scan that succeeded (not before the first scan, nor after a failed
-one). macOS: planned with AVFoundation. Tests:
+one). Known limitation: if the scan itself keeps failing while a camera is
+held open (on Windows, when Media Foundation can't list the cameras), Approve
+and the old reason stay even though the open camera works, and the 2 s
+rechecks go on; they clear at the first scan that succeeds. This follows
+from the rule above (`opening_a_camera_approves_only_after_a_successful_scan`);
+the Windows case is not yet verified on Windows. macOS: planned with AVFoundation. Tests:
 `v4l2_list_reports_a_node_it_is_not_allowed_to_open` (a real mode-000 node
 is blocked, an empty folder is "no camera"),
 `v4l2_list_shows_usable_and_blocked_cameras_together` and
