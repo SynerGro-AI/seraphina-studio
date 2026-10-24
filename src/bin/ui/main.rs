@@ -5179,9 +5179,8 @@ mod tests {
     #[ignore = "needs the seraphina CLI on PATH (pip install seraphina-agi)"]
     fn chat_routes_memory_intents_to_the_real_cli() {
         let mut cli = llm::SeraphinaCli::detect().expect("seraphina CLI not found on PATH");
-        let home = std::env::temp_dir().join(format!("seraphina_chat_cli_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        cli.home = Some(home.clone());
+        let home = crate::test_dir::TestDir::new("chat_cli");
+        cli.home = Some(home.path().to_path_buf());
         let ctx = egui::Context::default();
         let mut app = app_with(&ctx, None);
         app.assistant.set_cli(Some(cli));
@@ -5206,7 +5205,7 @@ mod tests {
         assert!(say(&mut app, "triad tidy the layer stack").contains("consensus"));
         assert!(say(&mut app, "version").contains("seraphina"));
         assert!(say(&mut app, "help").contains("recall [query]"));
-        let _ = std::fs::remove_dir_all(&home);
+        crate::test_dir::fail_late();
     }
 
     #[test]
