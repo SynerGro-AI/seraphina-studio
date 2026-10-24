@@ -114,7 +114,9 @@ fn the_tests_leave_nothing_in_temp_even_when_they_fail() {
         let exe = std::env::current_exe().unwrap();
         let child = std::process::Command::new(&exe)
             .args(TESTS_USING_TEMP)
-            .arg("--exact")
+            // one at a time, so the timed recording tests in here don't
+            // compete with each other on top of the main run
+            .args(["--exact", "--test-threads=1"])
             .env(FAIL_LATE, "1")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
