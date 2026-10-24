@@ -229,7 +229,10 @@ frame. Alternatively ffmpeg grabs the screen (x11grab / ddagrab / gdigrab), or
 the Camera source pipes a webcam the same way (`src/bin/ui/camera.rs`: V4L2
 mmap streaming on Linux, YUYV or MJPEG; Media Foundation's source reader on
 Windows). A camera that stops sending ends the recording or stream with the
-reason; it never freezes on the last frame. macOS cameras (AVFoundation) are
+reason; it never freezes on the last frame. If ffmpeg then can't finish the
+file, the recording error and its message say that too, with ffmpeg's reason
+(test `a_camera_failure_also_reports_a_recording_that_did_not_finish`, which
+records to `/dev/full`). macOS cameras (AVFoundation) are
 refused as unsupported for now.
 
 **Blocked camera access** (spec). When a camera exists but the system won't

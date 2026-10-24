@@ -1737,17 +1737,23 @@ impl Output {
             self.camera = None;
             self.camera_preview = false;
             let why = format!("camera stopped: {e}");
+            let mut toast = why.clone();
             if let Some(mut s) = self.rec.take() {
-                let _ = s.stop(Duration::from_secs(15));
+                // the file may not be playable if ffmpeg couldn't finish it
+                let rec_why = match s.stop(Duration::from_secs(15)) {
+                    Ok(()) => why.clone(),
+                    Err(fin) => format!("{why}; the recording didn't finish: {fin}"),
+                };
                 self.last_record = s.path.clone();
-                self.rec_error = Some(why.clone());
+                self.rec_error = Some(rec_why.clone());
+                toast = rec_why;
             }
             if self.live.take().is_some() || self.reconnect_at.is_some() {
                 self.reconnect_at = None;
                 self.live_since = None;
                 self.live_error = Some(why.clone());
             }
-            self.events.push((ToastKind::Error, why));
+            self.events.push((ToastKind::Error, toast));
         }
         if self.cfg.source != Source::Camera {
             self.camera_preview = false;
@@ -3137,6 +3143,48 @@ mod tests {
             "expected camera red, got {r},{g},{b}"
         );
         crate::test_dir::fail_late();
+    }
+
+    /// A camera that dies while the recording can't be finished reports
+    /// both: the camera's reason and why the file wasn't finalised. The
+    /// recording goes to /dev/full, a real device whose every write fails
+    /// with ENOSPC, so ffmpeg genuinely exits with an error.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_camera_failure_also_reports_a_recording_that_did_not_finish() {
+        find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
+        let mut o = camera_test_output();
+        o.camera = Some(recorded_camera(Some(40)));
+        o.start_record(Some(PathBuf::from("/dev/full"))).unwrap();
+        // no tick until both have happened, so the camera branch sees them
+        let t0 = Instant::now();
+        loop {
+            let cam_dead = o.camera.as_ref().unwrap().error().is_some();
+            let ff_done = o.rec.as_mut().unwrap().exited().is_some();
+            if cam_dead && ff_done {
+                break;
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(20),
+                "camera dead {cam_dead}, ffmpeg done {ff_done}"
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let toasts = o.tick();
+        assert!(!o.is_recording());
+        let err = o.rec_error.clone().expect("the recording error is set");
+        assert!(
+            err.starts_with("camera stopped: unplugged; the recording didn't finish: "),
+            "{err}"
+        );
+        assert!(err.contains("No space left on device"), "{err}");
+        assert!(
+            toasts
+                .iter()
+                .any(|(k, m)| *k == ToastKind::Error && *m == err),
+            "{toasts:?}"
+        );
+        assert_eq!(o.status().error.as_deref(), Some(err.as_str()));
     }
 
     /// A camera that stops sending ends the recording with the reason,
