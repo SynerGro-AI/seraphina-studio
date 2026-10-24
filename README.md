@@ -181,7 +181,7 @@ approximate.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `XAI_API_KEY` (or `SERAPHINA_GROK_API_KEY`) | none | Enables the LLM and Grok Imagine. Never committed; read from the environment only |
+| `XAI_API_KEY` (or `SERAPHINA_GROK_API_KEY`) | none | Enables the LLM and Grok Imagine. Never committed. Optional: you can save a key in Settings instead (see "Where the xAI key comes from" below). A set variable is used instead of the saved key |
 | `SERAPHINA_MODEL` / `SERAPHINA_GROK_MODEL` | `grok-4.7` | Chat model |
 | `SERAPHINA_BASE_URL` / `SERAPHINA_GROK_ENDPOINT` | `https://api.x.ai/v1` | Any OpenAI-compatible server (a local server works without a key) |
 | `SERAPHINA_NO_STREAM` | unset | Disable SSE streaming |
@@ -191,6 +191,27 @@ approximate.
 | `SERAPHINA_STUDIO_PREFS` / `SERAPHINA_HOME` | `~/.seraphina` | Learning store location |
 | `SERAPHINA_NATIVE_FRAME` | unset | Use the OS title bar instead of the custom one |
 | `SERAPHINA_MODE` / `SERAPHINA_LIGHT` | Paint / dark | Start mode and theme |
+
+**Where the xAI key comes from** (`src/bin/ui/secrets.rs`, `xai_key`):
+
+1. `SERAPHINA_GROK_API_KEY`, then `XAI_API_KEY`. A blank value is skipped.
+   A set variable always wins over a saved key; Settings shows "from
+   environment" and, if you save a key anyway, says the variable stays in use.
+2. Otherwise the key saved in Settings ▸ Seraphina ▸ xAI API key. On
+   Windows it is a generic credential `SeraphinaStudio/xai_api_key` in
+   Windows Credential Manager. If Credential Manager refuses the save, and
+   on other platforms, it goes to a private file, `xai_api_key` in the studio
+   folder (`~/.seraphina/studio`; 0600 on Unix). On Windows a key found in
+   that file is moved into Credential Manager the first time it is read.
+   Forget removes the saved key.
+
+Tests: `secrets::tests::file_store_roundtrip_and_clear` covers the file
+store (save, load, clear, 0600). `secrets::tests::vault_store_migrates_plaintext_file`
+covers Credential Manager save, load, clear and the move from the file; it
+runs only on Windows (it passes under Wine) and uses the stream-key slot,
+which goes through the same code. Not yet verified: the variable-over-saved
+order and the fallback to the file when Credential Manager refuses have no
+test, and none of this has been checked on a real Windows PC.
 
 ### Recording and streaming (ffmpeg)
 
@@ -501,6 +522,10 @@ and has unit tests. Two tests hold this list to the code:
 
 ### Planned (not built)
 
+v0.1.0 is the release being cut now: everything above that is not in this
+section. It is pending its tag and the owner's approval, so it has no date
+here. v0.2.0 is the next milestone.
+
 Dates are targets, not promises, in America/Edmonton time. Milestones
 come from the fix plan: M4b is the rest of M4 after M4a; M5 is repo and
 release; M6 is physics; M7+ is one mode per milestone. Work after the
@@ -509,14 +534,19 @@ stay out of the code until a real implementation lands with tests.
 
 | Milestone | Target |
 |-----------|--------|
-| v1 cleanup and M4 part 2 (M4b) | Wed Oct 28, 2026 (target) |
+| M4 part 2 (M4b), part of v0.2.0 | Wed Oct 28, 2026 (target) |
 | First green CI run, with the CI steps run locally | Sun Nov 1, 2026 (target). The GitHub Actions run happens whenever the organisation's billing lock lifts; it does not unlock automatically |
-| v0.2.0 release | Fri Nov 6, 2026 (target, pending the owner's approval) |
+| v0.2.0 release: physics validation fixes, M4b with the recorder timing fix and the local learner, shared-learning packs (C7), topic backgrounds (E7) | Fri Nov 6, 2026 (target, pending the owner's approval) |
 
 | Item | Target |
 |------|--------|
 | Seraphina.AGI integration: the app talks to Seraphina.AGI as a separate local process. Today the provider is Grok (xAI) through `src/bin/ui/llm.rs`; the only link now is the optional CLI bridge for memory intents | after v0.2.0 (proposed; not yet in the fix plan) |
 | Seraphina drives every mode, one learning system, chat saved with the project (C1, C4, C5/C6) | M4b: Wed Oct 28, 2026 (target) |
+| Local learner (C4: live weights, delta lessons) | v0.2.0: Fri Nov 6, 2026 (target) |
+| Recorder timing (R1): audio no longer runs past the video, and skipped frames no longer shorten it, under heavy load | v0.2.0: Fri Nov 6, 2026 (target) |
+| Physics validation fixes, including vacuum evaporation no longer dropping to 0 K (B4) and no spike when the last bit vaporises (B5), checked by the validation harness | v0.2.0: Fri Nov 6, 2026 (target) |
+| Shared learning (C7): signed, file-based glyph-card packs to share lessons between installs; LAN sharing later | v0.2.0: Fri Nov 6, 2026 (target) |
+| Topic backgrounds (E7) | v0.2.0: Fri Nov 6, 2026 (target) |
 | Remove `dist/` binaries and root clutter (G5–G7) | after v0.2.0 (M5) |
 | 64-bit physics, rotating bodies, contact graph (F1–F3) | after v0.2.0 (M6) |
 | Scenes and sources: window, game, browser, media, image, text and group sources; webcam capture on macOS (AVFoundation; Linux V4L2 and Windows Media Foundation are built, as the Camera output source); the OBS source/scene/filter/encoder/service registries, transitions, hotkeys, profiles, replay buffer, virtual camera, studio mode; a frame pipe and per-source profiler; NVENC/QSV/AMF (E6) | after v0.2.0 (M7+, Stream) |
