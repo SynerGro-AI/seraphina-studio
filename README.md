@@ -354,9 +354,9 @@ without it Record and Go live say "ffmpeg was not found" (see
 `packaging/windows/README.txt`).
 
 To ship the app, copy `ui.exe`, `assets\` and the `out.*` files into one
-folder; it also searches next to the exe and up to four folders above it.
-The Windows zip (CI's `seraphina-studio-windows` artifact and the release
-zip) is built from one list, `packaging/windows/zip-files.txt`, by
+folder; it also searches next to the exe and up to three folders above it.
+The Windows zip (CI's `seraphina-studio-windows` artifact; a release zip
+from a planned release workflow, not in the repo yet) is built from one list, `packaging/windows/zip-files.txt`, by
 `packaging/windows/stage.ps1`. Everything sits at the zip root:
 `SeraphinaStudio.exe` (the renamed `ui.exe`) with `README.txt`, `LICENSE`,
 `SOURCE.txt`, `assets\`, `scripts\` and the `out.*` samples next to it.
@@ -406,7 +406,7 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 ```bash
 cargo test --lib                       # library
-cargo test --bin ui                    # UI, command bus, AI agent (mock provider), headless
+cargo test --bin ui                    # UI, command bus, AI agent (scripted test provider), headless
 cargo test --no-default-features       # library alone, without the app's dependencies
 ```
 
