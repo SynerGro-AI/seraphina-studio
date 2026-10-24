@@ -76,9 +76,12 @@ nothing more is sent to xAI and a message says so. If the 24 h history
 can't be saved, a warning says so (once) and a usage-*.txt report goes in
 the logs folder; the cap still counts this session, but after a restart
 the last 24 h start from zero. If the saved history is damaged or can't
-be read at start, it is kept as usage.json.bad next to it (never
-overwritten) with the same warning and report, and the last 24 h start
-from zero; only a missing file starts fresh quietly. Costs use xAI's own
+be read at start, it is kept as usage.json.bad next to it (usage.json.bad-2
+and so on if that name is taken; never overwritten) with the same warning
+and report, and the last 24 h start from zero. If it can't be moved aside
+either, it is left as it is and nothing is saved over it until the next
+start; the warning says so and the cap counts that session in memory.
+Only a missing file starts fresh quietly. Costs use xAI's own
 figures when it reports them, otherwise estimates from the public price
 list (video is always estimated). Stop (shown while Seraphina or Grok
 Imagine is working) ends the wait at once, but a request xAI had already

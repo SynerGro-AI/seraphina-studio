@@ -9,7 +9,10 @@
 //! saved, the app warns once (toast and a `usage-*.txt` log report) and the
 //! cap keeps counting this session in memory. Only a missing file starts
 //! the history fresh quietly: one that is damaged or can't be read is moved
-//! aside to `usage.json.bad` (never overwritten) with the same warning.
+//! aside to `usage.json.bad` (`.bad-2`, ... if taken; never overwritten)
+//! with the same warning. If it can't be moved aside either, it is left
+//! where it is and nothing is saved over it that run: the warning says so
+//! and the cap counts that session in memory only.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -287,7 +290,8 @@ impl Meter {
     }
 
     /// The history on disk can't be used: keep it as `usage.json.bad` (or
-    /// `.bad-2`, ...) so the next save can't destroy it, and warn once.
+    /// `.bad-2`, ...) so the next save can't destroy it, and warn once. If
+    /// it can't be moved, this run saves nothing over it.
     fn load_failed(&mut self, path: &std::path::Path, why: &str) {
         let name = path
             .file_name()
@@ -301,7 +305,13 @@ impl Meter {
         }
         let kept = match std::fs::rename(path, &bad) {
             Ok(()) => format!("It was kept as {}", bad.display()),
-            Err(e) => format!("It couldn't be moved aside to {} ({e})", bad.display()),
+            Err(e) => {
+                self.path = None;
+                format!(
+                    "It couldn't be moved aside to {} ({e}), so it was left as it is and nothing will be saved over it until the app is restarted; this session's spending is counted in memory only",
+                    bad.display()
+                )
+            }
         };
         let msg = format!(
             "{why}. {kept}. The spend cap counts the last 24 h from zero now, so earlier spending isn't included."
@@ -554,6 +564,51 @@ mod tests {
         // same second, same pid: the report file name repeats, so look for
         // the new message rather than counting files
         assert!(usage_logs(&logs).iter().any(|r| r.contains(&w)));
+    }
+
+    /// A damaged history that can't be moved aside either (here the
+    /// `.bad` name is too long for the file system, a real rename failure
+    /// for any user) is never saved over: that run saves nothing, says so
+    /// once in the warning and the log, and still counts in memory.
+    #[test]
+    fn a_history_that_cant_be_moved_aside_is_never_saved_over() {
+        let dir = crate::test_dir::TestDir::new("usage_unmovable");
+        let (studio, logs) = (dir.path().join("studio"), dir.path().join("logs"));
+        std::fs::create_dir_all(&studio).unwrap();
+        // 252 bytes is a legal name; with ".bad" it is 256, over the
+        // 255-byte limit of ext4, NTFS and the rest
+        let path = studio.join(format!("{}.json", "u".repeat(247)));
+        let damaged = br#"{"entries":[[1,2"#;
+        std::fs::write(&path, damaged).unwrap();
+        let bad = studio.join(format!("{}.json.bad", "u".repeat(247)));
+        let rename = std::fs::rename(&path, &bad).unwrap_err();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let w = m.take_warning().expect("warned");
+        assert!(w.contains("is damaged ("), "{w}");
+        assert!(
+            w.contains(&format!(
+                "It couldn't be moved aside to {} ({rename})",
+                bad.display()
+            )),
+            "{w}"
+        );
+        assert!(w.contains("nothing will be saved over it"), "{w}");
+        assert!(w.contains("counted in memory only"), "{w}");
+        let reports = usage_logs(&logs);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(reports[0].contains(&w), "{reports:?}");
+        m.record(&spend(0.25));
+        m.record(&spend(0.25));
+        assert!((m.last_24h_usd() - 0.5).abs() < 1e-9, "counted in memory");
+        assert!(m.check(0.6).is_err(), "the cap still holds this session");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            damaged,
+            "the original history is untouched"
+        );
+        assert!(!bad.exists());
+        assert_eq!(m.take_warning(), None, "said once");
+        assert_eq!(usage_logs(&logs).len(), 1);
     }
 
     /// A history that can't be read (here a folder named `usage.json`,
