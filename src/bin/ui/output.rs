@@ -2766,10 +2766,11 @@ mod tests {
         assert!(w.span >= 5.0, "{:?}", w);
         assert!(
             (frames_secs - w.span).abs() <= 1.0 / 30.0 + 1e-9,
-            "{} frames ({frames_secs:.3} s) for {:.3} s of wall time ({} repeated)",
+            "{} frames ({frames_secs:.3} s) for {:.3} s of wall time ({} repeated); {:?}",
             w.frames_in,
             w.span,
-            w.repeated
+            w.repeated,
+            w
         );
         assert!(msg.contains("saved"), "{}", msg);
         let p = probe(&ff, &path.to_string_lossy()).unwrap();
