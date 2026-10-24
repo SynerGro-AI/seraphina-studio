@@ -205,13 +205,20 @@ approximate.
    that file is moved into Credential Manager the first time it is read.
    Forget removes the saved key.
 
-Tests: `secrets::tests::file_store_roundtrip_and_clear` covers the file
-store (save, load, clear, 0600). `secrets::tests::vault_store_migrates_plaintext_file`
-covers Credential Manager save, load, clear and the move from the file; it
-runs only on Windows (it passes under Wine) and uses the stream-key slot,
-which goes through the same code. Not yet verified: the variable-over-saved
-order and the fallback to the file when Credential Manager refuses have no
-test, and none of this has been checked on a real Windows PC.
+Tests: `secrets::tests::a_set_variable_wins_over_the_saved_xai_key` covers
+the order in step 1 and the saved key in step 2, with a real saved key in a
+test folder. `secrets::tests::file_store_roundtrip_and_clear` covers the
+file store (save, load, clear, 0600).
+`secrets::tests::vault_store_migrates_plaintext_file` covers Credential
+Manager save, load, clear and the move from the file; it runs only on
+Windows (it passes under Wine) and uses the stream-key slot, which goes
+through the same code.
+`secrets::tests::a_refused_credential_manager_save_falls_back_to_the_private_file`
+makes Credential Manager really refuse (a key over its 2,560-byte limit) and
+checks the key lands in the private file and loads back. It is `#[ignore]`:
+Wine has no such limit, so it needs a run on a real Windows PC with
+`--ignored`. Not yet verified: none of this has been checked on a real
+Windows PC.
 
 ### Recording and streaming (ffmpeg)
 

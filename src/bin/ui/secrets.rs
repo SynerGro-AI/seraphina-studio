@@ -177,10 +177,17 @@ pub enum KeySource {
     Saved,
 }
 
+#[cfg(test)]
 fn env_key() -> Option<String> {
+    env_key_in(&|n| std::env::var(n).ok())
+}
+
+/// The first non-blank of SERAPHINA_GROK_API_KEY and XAI_API_KEY, looked up
+/// with `var` (the process environment in the app).
+fn env_key_in(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     ["SERAPHINA_GROK_API_KEY", "XAI_API_KEY"]
         .iter()
-        .filter_map(|n| std::env::var(n).ok())
+        .filter_map(|n| var(n))
         .map(|v| v.trim().to_string())
         .find(|v| !v.is_empty())
 }
@@ -188,14 +195,21 @@ fn env_key() -> Option<String> {
 /// The xAI key: environment first, then the saved one. Unit tests never
 /// read the user's real store.
 pub fn xai_key() -> Option<(String, KeySource)> {
-    if let Some(k) = env_key() {
+    let user = (!cfg!(test)).then(Store::user);
+    key_from(&|n| std::env::var(n).ok(), user.as_ref())
+}
+
+/// The lookup order behind [`xai_key`]: a variable from `var`, else the key
+/// saved in `store`.
+fn key_from(
+    var: &dyn Fn(&str) -> Option<String>,
+    store: Option<&Store>,
+) -> Option<(String, KeySource)> {
+    if let Some(k) = env_key_in(var) {
         crate::crash::register_secret(&k);
         return Some((k, KeySource::Env));
     }
-    if cfg!(test) {
-        return None;
-    }
-    let k = Store::user().load(Secret::XaiKey);
+    let k = store?.load(Secret::XaiKey);
     (!k.is_empty()).then_some((k, KeySource::Saved))
 }
 
@@ -351,6 +365,57 @@ mod tests {
         }
     }
 
+    /// A set variable wins over a saved key; SERAPHINA_GROK_API_KEY comes
+    /// before XAI_API_KEY, a blank one is skipped, and with no variable the
+    /// saved key is used. The variables come from a lookup table, not the
+    /// process environment, so other tests can't race this one. Key values
+    /// are never printed.
+    #[test]
+    fn a_set_variable_wins_over_the_saved_xai_key() {
+        let tmp = crate::test_dir::TestDir::new("secrets-precedence");
+        let s = Store::at(tmp.path(), "SeraphinaStudioTest", false);
+        s.save(Secret::XaiKey, "xai-saved-test-value").unwrap();
+        let vars = |set: &'static [(&'static str, &'static str)]| {
+            move |n: &str| {
+                set.iter()
+                    .find(|(k, _)| *k == n)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let got = |set: &'static [(&'static str, &'static str)]| {
+            key_from(&vars(set), Some(&s))
+                .map(|(k, src)| (k == "xai-env-test-value", k == "xai-saved-test-value", src))
+        };
+        // (is the env value, is the saved value, source)
+        assert_eq!(
+            got(&[("XAI_API_KEY", "xai-env-test-value")]),
+            Some((true, false, KeySource::Env))
+        );
+        assert_eq!(
+            got(&[
+                ("SERAPHINA_GROK_API_KEY", "xai-env-test-value"),
+                ("XAI_API_KEY", "xai-other-test-value")
+            ]),
+            Some((true, false, KeySource::Env))
+        );
+        assert_eq!(
+            got(&[
+                ("SERAPHINA_GROK_API_KEY", "  "),
+                ("XAI_API_KEY", "xai-env-test-value")
+            ]),
+            Some((true, false, KeySource::Env))
+        );
+        assert_eq!(got(&[]), Some((false, true, KeySource::Saved)));
+        assert_eq!(
+            got(&[("XAI_API_KEY", " ")]),
+            Some((false, true, KeySource::Saved))
+        );
+        s.clear(Secret::XaiKey);
+        assert_eq!(got(&[]), None);
+        assert_eq!(key_from(&vars(&[]), None), None);
+        crate::test_dir::fail_late();
+    }
+
     #[test]
     fn key_test_reports_unreachable_without_the_key() {
         let k = "xai-NOT-A-REAL-KEY-0123456789";
@@ -395,6 +460,37 @@ mod tests {
         assert_eq!(s.load(Secret::StreamKey), "live_new");
         s.clear(Secret::StreamKey);
         assert_eq!(s.location(Secret::StreamKey), Where::None);
+        crate::test_dir::fail_late();
+    }
+
+    /// Real Credential Manager refusal: a key longer than
+    /// CRED_MAX_CREDENTIAL_BLOB_SIZE (5 * 512 bytes) makes CredWriteW fail,
+    /// so the key goes to the private file and loads back from it (the
+    /// move into Credential Manager fails the same way, so the file stays).
+    /// Real Windows only: Wine's CredWriteW has no blob size limit, so it
+    /// stores the key and this test can't see a refusal there.
+    #[test]
+    #[ignore = "real Windows only (Wine's CredWriteW accepts any blob size): run with --ignored on a Windows PC"]
+    fn a_refused_credential_manager_save_falls_back_to_the_private_file() {
+        let tmp = crate::test_dir::TestDir::new("secrets-refused");
+        let d = tmp.path();
+        let prefix = format!("SeraphinaStudioTest{}", std::process::id());
+        let s = Store::at(d, &prefix, true);
+        assert!(s.use_vault, "needs Windows Credential Manager");
+        let big = "k".repeat(5 * 512 + 1);
+        assert_eq!(s.save(Secret::XaiKey, &big), Ok(Where::File));
+        assert!(d.join("xai_api_key").exists(), "private file written");
+        assert!(
+            s.load(Secret::XaiKey) == big,
+            "the saved key did not load back"
+        );
+        assert!(
+            d.join("xai_api_key").exists(),
+            "file kept after a refused move"
+        );
+        assert_eq!(s.location(Secret::XaiKey), Where::File);
+        s.clear(Secret::XaiKey);
+        assert_eq!(s.location(Secret::XaiKey), Where::None);
         crate::test_dir::fail_late();
     }
 }
