@@ -442,6 +442,10 @@ pub struct App {
     xai_cache: Option<Option<(String, secrets::KeySource)>>,
     /// xAI tokens and cost, and the spend cap (C3).
     pub meter: usage::Meter,
+    /// Test scratch folders this App uses, removed when it drops (even
+    /// when the test panics). Last, so everything using them drops first.
+    #[cfg(test)]
+    test_dirs: Vec<test_dir::TestDir>,
 }
 
 pub fn install_fonts(ctx: &egui::Context) {
@@ -553,6 +557,8 @@ impl App {
             xai_test_rx: None,
             meter: usage::Meter::ephemeral(0.0),
             xai_cache: None,
+            #[cfg(test)]
+            test_dirs: Vec::new(),
         };
         if let Some(w) = app.assistant.prefs.load_warning.clone() {
             app.toasts.push(ToastKind::Warn, &w);
@@ -4047,18 +4053,39 @@ mod tests {
         let mut app = App::with(ctx, a, videogen::VideoGenPanel::unconfigured());
         app.app_settings.ai_consent = true; // tests that need the prompt clear it
                                             // never touch the user's saved output settings or stream key
-        let dir = std::env::temp_dir().join(format!("seraphina_app_rec_{}", std::process::id()));
+                                            // a recordings folder of this App's own, removed when it drops
+        let rec = test_dir::TestDir::new("app_rec");
         app.output = output::Output::new(
             output::OutputConfig {
-                record_dir: dir.to_string_lossy().into_owned(),
+                record_dir: rec.path().to_string_lossy().into_owned(),
                 width: 320,
                 height: 180,
                 ..Default::default()
             },
             String::new(),
         );
+        app.test_dirs.push(rec);
         app.project.docs_dir = project::test_dir("docs");
         app
+    }
+
+    /// app_with's recordings folder goes when the App drops, also when
+    /// the test panics part-way, and each App has its own.
+    #[test]
+    fn app_with_removes_its_recordings_folder_even_when_the_test_panics() {
+        let ctx = egui::Context::default();
+        let mut rec = std::path::PathBuf::new();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let app = app_with(&ctx, None);
+            rec = std::path::PathBuf::from(&app.output.cfg.record_dir);
+            assert!(rec.is_dir(), "{} not made", rec.display());
+            std::fs::write(rec.join("take.mp4"), b"x").unwrap();
+            let other = app_with(&ctx, None);
+            assert_ne!(other.output.cfg.record_dir, app.output.cfg.record_dir);
+            panic!("test failed part-way");
+        }));
+        assert!(r.is_err());
+        assert!(!rec.exists(), "{} left behind", rec.display());
     }
 
     fn call(name: &str, args: &str) -> ToolCall {
