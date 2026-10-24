@@ -342,6 +342,20 @@ been pushed, so it has not run on these changes yet. The first real-Windows
 run should confirm the Build Tools install, the
 `cargo build` above, and the camera and ffmpeg paths.
 
+**MSVC build and static CRT: not verified.** `.cargo/config.toml` links the
+C runtime into the MSVC exe (`+crt-static`) so that it should need no Visual
+C++ Redistributable, but no MSVC build has run yet, so this is not verified
+and `packaging/windows/README.txt` says so. The check,
+`this_exe_does_not_import_the_vc_runtime` (it reads the exe's import table),
+compiles only for `target_env = "msvc"`; the mingw build under Wine links
+the C runtime differently and proves nothing about it.
+
+**Hardware camera testing is manual.** No camera exists on the dev box or
+the CI runners, so `v4l2_reads_frames_from_a_real_device` and
+`media_foundation_reads_frames_from_a_real_camera` stay `#[ignore]`; run
+them by hand with `cargo test --bin ui -- --ignored reads_frames_from_a_real`
+on a machine with a camera (`SERAPHINA_TEST_CAMERA` picks the V4L2 node).
+
 ### Run on Linux / macOS
 
 ```bash

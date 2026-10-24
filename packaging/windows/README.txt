@@ -4,10 +4,12 @@ Double-click SeraphinaStudio.exe. Keep the assets folder, out.obsr and out.h264
 next to it: Paint and Composite open the sample images in assets, Stream mode
 opens out.obsr at startup, and out.h264 is the default file in its Open box.
 You can also open a file directly:  SeraphinaStudio.exe path\to\image.psd
-Built with the x86_64-pc-windows-msvc toolchain (C runtime linked in, so no
-Visual C++ Redistributable is needed). Its tests pass on a GitHub Windows
-Server 2025 runner before the release zip is made; the code is also tested
-under Wine 10 on Linux (a proxy, not real Windows).
+Built with the x86_64-pc-windows-msvc toolchain, with the C runtime linked
+in (static CRT) so that no Visual C++ Redistributable should be needed.
+NOT VERIFIED: no MSVC build of this version has been run and checked yet.
+Until one has, if Windows says VCRUNTIME140.dll is missing, install the
+Visual C++ Redistributable. The code is tested under Wine 10 on Linux (a
+proxy, not real Windows).
 
 FILES IN THIS FOLDER
 --------------------

@@ -535,7 +535,7 @@ fn the_msvc_build_links_the_c_runtime_the_package_readme_promises() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let words = readme.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        words.contains("no Visual C++ Redistributable"),
+        words.contains("no Visual C++ Redistributable should be needed"),
         "README.txt no longer makes the promise this test backs"
     );
     let path = root.join(".cargo/config.toml");
@@ -564,8 +564,41 @@ fn the_msvc_build_links_the_c_runtime_the_package_readme_promises() {
     );
 }
 
+/// Until a real MSVC build has run, the docs must not claim the MSVC exe
+/// or its static CRT works: README.md and packaging/windows/README.txt say
+/// "not verified". README.md also says hardware camera testing is manual,
+/// and the real-camera tests stay ignored.
+#[test]
+fn msvc_build_and_hardware_cameras_are_marked_unverified() {
+    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let readme = words(include_str!("../README.md"));
+    let package = words(include_str!("../packaging/windows/README.txt"));
+    assert!(
+        readme.contains("**MSVC build and static CRT: not verified.**"),
+        "README.md doesn't mark the MSVC build and static CRT not verified"
+    );
+    assert!(
+        package.contains("static CRT")
+            && package.contains("NOT VERIFIED: no MSVC build of this version has been run"),
+        "packaging/windows/README.txt claims the MSVC build without marking it not verified"
+    );
+    assert!(
+        readme.contains("**Hardware camera testing is manual.**"),
+        "README.md doesn't say hardware camera testing is manual"
+    );
+    let camera = include_str!("bin/ui/camera.rs");
+    for t in [
+        "fn v4l2_reads_frames_from_a_real_device()",
+        "fn media_foundation_reads_frames_from_a_real_camera()",
+    ] {
+        let at = camera.find(t).unwrap_or_else(|| panic!("{t} is gone"));
+        let attrs = &camera[camera[..at].rfind("#[test]").unwrap()..at];
+        assert!(attrs.contains("#[ignore"), "{t} is no longer ignored");
+    }
+}
+
 /// The DLLs a PE image imports, read from its import directory.
-#[cfg(windows)]
+#[cfg(all(windows, target_env = "msvc"))]
 fn pe_imports(b: &[u8]) -> Vec<String> {
     let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize;
     let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
@@ -602,10 +635,11 @@ fn pe_imports(b: &[u8]) -> Vec<String> {
     out
 }
 
-/// On Windows (the MSVC build in CI's windows-ui job, the mingw build
-/// under Wine): this test exe, built with the same flags as the app, must
-/// not import the VC++ / Universal C runtime DLLs.
-#[cfg(windows)]
+/// The MSVC build (CI's windows-ui job, release.yml): this test exe, built
+/// with the same flags as the app, must not import the VC++ / Universal C
+/// runtime DLLs. Only for MSVC: the mingw build links the C runtime its
+/// own way, so passing there would say nothing about the shipped exe.
+#[cfg(all(windows, target_env = "msvc"))]
 #[test]
 fn this_exe_does_not_import_the_vc_runtime() {
     let exe = std::env::current_exe().expect("current_exe");
