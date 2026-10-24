@@ -415,7 +415,9 @@ missing; they never pass silently.
 
 * **ffmpeg** (or `SERAPHINA_FFMPEG`) is required by
   `records_five_seconds_to_mp4_verified_by_ffprobe` (5 s to MP4, checked with
-  ffprobe) and `goes_live_to_an_ffmpeg_rtmp_listener` (goes live to
+  ffprobe: 4.5-5.8 s long, every frame the writer sent is in the file, the
+  video is within 0.2 s of the wall clock, and the audio track is no longer
+  than the video by more than one AAC frame) and `goes_live_to_an_ffmpeg_rtmp_listener` (goes live to
   `ffmpeg -listen 1` on 127.0.0.1 and checks the received FLV with ffprobe).
   `stream_delay_holds_the_stream_back_by_the_delay` (Linux: the relay must
   not connect to the listener before the 4 s delay, viewers must trail the
@@ -543,14 +545,13 @@ stay out of the code until a real implementation lands with tests.
 |-----------|--------|
 | M4 part 2 (M4b), part of v0.2.0 | Wed Oct 28, 2026 (target) |
 | First green CI run, with the CI steps run locally | Sun Nov 1, 2026 (target). The GitHub Actions run happens whenever the organisation's billing lock lifts; it does not unlock automatically |
-| v0.2.0 release: physics validation fixes, M4b with the recorder timing fix and the local learner, shared-learning packs (C7), topic backgrounds (E7) | Fri Nov 6, 2026 (target, pending the owner's approval) |
+| v0.2.0 release: physics validation fixes, M4b with the local learner, shared-learning packs (C7), topic backgrounds (E7) | Fri Nov 6, 2026 (target, pending the owner's approval) |
 
 | Item | Target |
 |------|--------|
 | Seraphina.AGI integration: the app talks to Seraphina.AGI as a separate local process. Today the provider is Grok (xAI) through `src/bin/ui/llm.rs`; the only link now is the optional CLI bridge for memory intents | after v0.2.0 (proposed; not yet in the fix plan) |
 | Seraphina drives every mode, one learning system, chat saved with the project (C1, C4, C5/C6) | M4b: Wed Oct 28, 2026 (target) |
 | Local learner (C4: live weights, delta lessons) | v0.2.0: Fri Nov 6, 2026 (target) |
-| Recorder timing (R1): audio no longer runs past the video, and skipped frames no longer shorten it, under heavy load | v0.2.0: Fri Nov 6, 2026 (target) |
 | Physics validation fixes, including vacuum evaporation no longer dropping to 0 K (B4) and no spike when the last bit vaporises (B5), checked by the validation harness | v0.2.0: Fri Nov 6, 2026 (target) |
 | Shared learning (C7): signed, file-based glyph-card packs to share lessons between installs; LAN sharing later | v0.2.0: Fri Nov 6, 2026 (target) |
 | Topic backgrounds (E7) | v0.2.0: Fri Nov 6, 2026 (target) |

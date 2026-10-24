@@ -29,15 +29,15 @@ with a test. The tables in README.md ("Planned (not built)") hold the
 target dates (America/Edmonton; targets, not promises):
 
 * v0.1.0: the release being cut now (main, the AI reliability work, the
-  v1 cleanup, camera, stream delay and Windows packaging). Pending its tag
-  and the owner's approval; no date here.
+  v1 cleanup, camera, stream delay, Windows packaging and the recorder
+  timing fix, R1). Pending its tag and the owner's approval; no date here.
 * M4 part 2 (M4b), part of v0.2.0: Wed Oct 28, 2026 (target).
 * First green CI run, run locally: Sun Nov 1, 2026 (target). The GitHub
   run waits for the billing lock to lift; it does not unlock by itself.
 * v0.2.0 release: Fri Nov 6, 2026 (target, pending the owner's approval).
   It holds the physics validation fixes (B4, B5 and the rest), M4b with the
-  recorder timing fix (R1) and the local learner (C4), shared-learning
-  packs (C7) and topic backgrounds (E7).
+  local learner (C4), shared-learning packs (C7) and topic backgrounds
+  (E7).
 
 Everything below comes after v0.2.0 and has no date yet:
 
