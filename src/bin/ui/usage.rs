@@ -7,7 +7,9 @@
 //! entry as estimated. The cap counts the last 24 hours across sessions,
 //! kept in `~/.seraphina/studio/usage.json`. If that file can't be
 //! saved, the app warns once (toast and a `usage-*.txt` log report) and the
-//! cap keeps counting this session in memory.
+//! cap keeps counting this session in memory. Only a missing file starts
+//! the history fresh quietly: one that is damaged or can't be read is moved
+//! aside to `usage.json.bad` (never overwritten) with the same warning.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -240,21 +242,71 @@ impl Meter {
         crate::output::studio_dir().join("usage.json")
     }
 
-    /// Load the 24 h ledger from disk (a damaged file starts fresh).
+    /// Load the 24 h ledger from disk. A missing file starts fresh; a
+    /// damaged or unreadable one is moved aside and warned about.
     pub fn load(cap_usd: f64) -> Self {
         Self::load_from(Self::path(), crate::crash::logs_dir(), cap_usd)
     }
 
     /// `load` with the ledger file and the log folder given.
     pub fn load_from(path: PathBuf, log_dir: PathBuf, cap_usd: f64) -> Self {
-        let ledger = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let mut m = Self::with(Some(path), ledger, cap_usd);
+        let mut m = Self::with(Some(path.clone()), Ledger::default(), cap_usd);
         m.log_dir = Some(log_dir);
+        let why = match std::fs::read(&path) {
+            Ok(b) => match serde_json::from_slice(&b) {
+                Ok(l) => {
+                    m.ledger = l;
+                    None
+                }
+                Err(e) => Some(format!(
+                    "The xAI spending history {} is damaged ({e})",
+                    path.display()
+                )),
+            },
+            // no file there: nothing to lose (a file where a parent folder
+            // should be gives NotADirectory on Linux, NotFound on Windows;
+            // saving then fails and warns)
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                None
+            }
+            Err(e) => Some(format!(
+                "Couldn't read the xAI spending history {} ({e})",
+                path.display()
+            )),
+        };
+        if let Some(why) = why {
+            m.load_failed(&path, &why);
+        }
         m.prune(now_secs());
         m
+    }
+
+    /// The history on disk can't be used: keep it as `usage.json.bad` (or
+    /// `.bad-2`, ...) so the next save can't destroy it, and warn once.
+    fn load_failed(&mut self, path: &std::path::Path, why: &str) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "usage.json".into());
+        let mut bad = path.with_file_name(format!("{name}.bad"));
+        let mut n = 1;
+        while bad.symlink_metadata().is_ok() {
+            n += 1;
+            bad = path.with_file_name(format!("{name}.bad-{n}"));
+        }
+        let kept = match std::fs::rename(path, &bad) {
+            Ok(()) => format!("It was kept as {}", bad.display()),
+            Err(e) => format!("It couldn't be moved aside to {} ({e})", bad.display()),
+        };
+        let msg = format!(
+            "{why}. {kept}. The spend cap counts the last 24 h from zero now, so earlier spending isn't included."
+        );
+        self.warn_once(msg);
     }
 
     /// In-memory only (tests).
@@ -311,6 +363,13 @@ impl Meter {
             path.display(),
             e
         );
+        self.warn_once(msg);
+    }
+
+    /// The first problem of a run of them: stderr, a `usage-*.txt` log
+    /// report and a warning for the user (via `take_warning`). A good save
+    /// ends the run.
+    fn warn_once(&mut self, msg: String) {
         if self.save_error.is_none() {
             eprintln!("warning: {msg}");
             if let Some(dir) = &self.log_dir {
@@ -323,7 +382,7 @@ impl Meter {
         self.save_error = Some(msg);
     }
 
-    /// A save failure to show the user, once.
+    /// A save or load problem to show the user, once.
     pub fn take_warning(&mut self) -> Option<String> {
         self.warning.take()
     }
@@ -399,6 +458,144 @@ fn compact(n: u64) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The `usage-*.txt` reports in `logs`.
+    fn usage_logs(logs: &std::path::Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(logs)
+            .expect("the logs folder was made")
+            .map(|e| e.unwrap())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("usage-"))
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn spend(usd: f64) -> Usage {
+        Usage {
+            ticks: ticks(usd),
+            ..Default::default()
+        }
+    }
+
+    /// A damaged history isn't reset silently: it is kept as
+    /// `usage.json.bad` (a second one as `.bad-2`, never overwriting), the
+    /// warning says so once and goes in a log report, and the next save
+    /// writes a fresh file. A missing file starts fresh with no warning.
+    #[test]
+    fn a_damaged_spending_history_is_kept_aside_and_warned_about() {
+        let dir = crate::test_dir::TestDir::new("usage_damaged");
+        let (studio, logs) = (dir.path().join("studio"), dir.path().join("logs"));
+        std::fs::create_dir_all(&studio).unwrap();
+        let path = studio.join("usage.json");
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        assert_eq!(m.take_warning(), None, "a missing file is just new");
+        assert!(!logs.exists(), "nothing logged");
+        m.record(&spend(0.25));
+        drop(m);
+        let good = std::fs::read(&path).unwrap();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        assert_eq!(m.take_warning(), None);
+        assert!((m.last_24h_usd() - 0.25).abs() < 1e-9, "a good file loads");
+        drop(m);
+
+        let damaged = &good[..good.len() - 3];
+        std::fs::write(&path, damaged).unwrap();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let bad = studio.join("usage.json.bad");
+        let w = m.take_warning().expect("a damaged history is warned about");
+        assert!(
+            w.starts_with(&format!(
+                "The xAI spending history {} is damaged (",
+                path.display()
+            )),
+            "{w}"
+        );
+        assert!(
+            w.contains(&format!("It was kept as {}.", bad.display())),
+            "{w}"
+        );
+        assert!(w.contains("counts the last 24 h from zero"), "{w}");
+        assert_eq!(m.take_warning(), None, "once");
+        assert_eq!(std::fs::read(&bad).unwrap(), damaged, "kept byte for byte");
+        assert!(!path.exists());
+        let reports = usage_logs(&logs);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(reports[0].contains(&w), "{reports:?}");
+        m.record(&spend(0.10));
+        assert!(m.save_error.is_none());
+        assert!(serde_json::from_slice::<Ledger>(&std::fs::read(&path).unwrap()).is_ok());
+        assert_eq!(
+            std::fs::read(&bad).unwrap(),
+            damaged,
+            "the save left it alone"
+        );
+        drop(m);
+
+        std::fs::write(&path, b"{").unwrap();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let w = m.take_warning().expect("warned again on the next start");
+        assert!(
+            w.contains(&format!(
+                "It was kept as {}.",
+                studio.join("usage.json.bad-2").display()
+            )),
+            "{w}"
+        );
+        assert_eq!(
+            std::fs::read(&bad).unwrap(),
+            damaged,
+            "the first one is not overwritten"
+        );
+        assert_eq!(
+            std::fs::read(studio.join("usage.json.bad-2")).unwrap(),
+            b"{"
+        );
+        // same second, same pid: the report file name repeats, so look for
+        // the new message rather than counting files
+        assert!(usage_logs(&logs).iter().any(|r| r.contains(&w)));
+    }
+
+    /// A history that can't be read (here a folder named `usage.json`,
+    /// which no user can read as a file, root included) isn't reset
+    /// silently either: it's moved aside with its contents, warned about
+    /// once and logged, and saving works again afterwards.
+    #[test]
+    fn an_unreadable_spending_history_is_kept_aside_and_warned_about() {
+        let dir = crate::test_dir::TestDir::new("usage_unreadable");
+        let (studio, logs) = (dir.path().join("studio"), dir.path().join("logs"));
+        let path = studio.join("usage.json");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("inside"), b"kept").unwrap();
+        let read = std::fs::read(&path).unwrap_err();
+        assert_ne!(read.kind(), std::io::ErrorKind::NotFound);
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let bad = studio.join("usage.json.bad");
+        let w = m
+            .take_warning()
+            .expect("an unreadable history is warned about");
+        assert!(
+            w.starts_with(&format!(
+                "Couldn't read the xAI spending history {} (",
+                path.display()
+            )),
+            "{w}"
+        );
+        assert!(w.contains(&read.to_string()), "{w}");
+        assert!(
+            w.contains(&format!("It was kept as {}.", bad.display())),
+            "{w}"
+        );
+        assert_eq!(m.take_warning(), None, "once");
+        assert_eq!(std::fs::read(bad.join("inside")).unwrap(), b"kept");
+        let reports = usage_logs(&logs);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(reports[0].contains(&w), "{reports:?}");
+        m.record(&spend(0.10));
+        assert!(m.save_error.is_none(), "{:?}", m.save_error);
+        assert!(path.is_file());
+        assert_eq!(m.take_warning(), None);
+    }
 
     #[test]
     fn parses_xai_usage_and_prefers_its_cost() {
