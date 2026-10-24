@@ -1426,13 +1426,18 @@ impl Output {
         if let Some(why) = still_blocked {
             self.camera_blocked = Some(why);
         } else if self.camera_blocked.take().is_some() {
-            self.camera_fix_shown = false;
-            self.events.push((
-                ToastKind::Success,
-                "Camera access approved; the camera opens now.".into(),
-            ));
+            self.camera_approved();
         }
         self.camera.insert(feed).frames.clone()
+    }
+
+    /// Blocked access was just lifted: reset the fix hint and say so.
+    fn camera_approved(&mut self) {
+        self.camera_fix_shown = false;
+        self.events.push((
+            ToastKind::Success,
+            "Camera access approved; the camera opens now.".into(),
+        ));
     }
 
     /// Show or hide the camera preview in Settings ▸ Output.
@@ -1462,8 +1467,11 @@ impl Output {
 
     /// Take a scan's result. Blocked cameras keep (or start) the Approve
     /// flow, naming each one; with no camera at all there is nothing to
-    /// approve. Otherwise blocked access found at open (Windows) stands
-    /// until a test open succeeds.
+    /// approve. With none blocked and a camera already open and healthy
+    /// (held by the preview, a recording or a stream), access counts as
+    /// approved now: no test open would run while it is held. Otherwise
+    /// blocked access found at open (Windows) stands until a test open
+    /// succeeds.
     fn set_cameras(&mut self, r: Result<crate::camera::Listing, crate::camera::CameraError>) {
         match &r {
             Err(crate::camera::CameraError::Blocked(m)) => self.camera_blocked = Some(m.clone()),
@@ -1472,6 +1480,10 @@ impl Output {
                     self.camera_blocked = Some(why);
                 } else if l.cameras.is_empty() {
                     self.camera_blocked = None;
+                } else if self.camera.as_ref().is_some_and(|f| f.error().is_none())
+                    && self.camera_blocked.take().is_some()
+                {
+                    self.camera_approved();
                 }
             }
             _ => {}
@@ -3030,6 +3042,9 @@ mod tests {
         assert_eq!(o.camera_blocked, Some(why.clone()));
         o.adopt_camera(recorded_camera(None));
         assert_eq!(o.camera_blocked, Some(why.clone()), "still blocked");
+        // the recheck closes it again: nothing uses it
+        o.release_camera();
+        assert!(o.camera.is_none());
         let approved = |o: &Output| {
             o.events
                 .iter()
@@ -3074,6 +3089,81 @@ mod tests {
         o.adopt_camera(recorded_camera(None));
         assert_eq!(o.camera_blocked, None);
         assert!(approved(&o), "{:?}", o.events);
+        crate::test_dir::fail_late();
+    }
+
+    /// While a camera is held open (here the preview), the recheck never
+    /// test-opens, so the scan itself has to lift the block: a blocked node
+    /// that is approved (made readable) or unplugged (removed) ends Approve,
+    /// the reason, the 2 s recheck and says "approved". Real nodes: a
+    /// mode-000 file, then the same file opened up or deleted, probed by
+    /// the real V4L2 probe; the open camera is a real Feed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_held_camera_lifts_the_block_once_the_blocked_node_is_approved_or_unplugged() {
+        use crate::camera::tests::{blocked_why, locked_node, mixed_listing, rerun_as_nobody};
+        use std::os::unix::fs::PermissionsExt;
+        if rerun_as_nobody(
+            "output::tests::a_held_camera_lifts_the_block_once_the_blocked_node_is_approved_or_unplugged",
+        ) {
+            return;
+        }
+        let usable = crate::camera::Device {
+            name: "USB Cam".into(),
+            path: "/dev/video0".into(),
+        };
+        for how in ["approved", "unplugged"] {
+            let dir = crate::test_dir::TestDir::new("output_held_cam");
+            let locked = locked_node(&dir, "video2");
+            let p = locked.to_string_lossy().into_owned();
+            let scan = |o: &mut Output| {
+                let probes = if locked.exists() {
+                    vec![(p.clone(), crate::camera::v4l2::probe(&p))]
+                } else {
+                    vec![]
+                };
+                o.set_cameras(Ok(mixed_listing(usable.clone(), probes)));
+            };
+            let mut o = Output::new(
+                OutputConfig {
+                    source: Source::Camera,
+                    ..Default::default()
+                },
+                String::new(),
+            );
+            scan(&mut o);
+            let why = blocked_why(&locked);
+            assert_eq!(o.camera_blocked, Some(why.clone()), "{how}");
+            o.camera_preview = true;
+            o.adopt_camera(recorded_camera(None));
+            o.camera_fix_shown = true;
+            assert_eq!(o.camera_blocked, Some(why.clone()), "{how}: still blocked");
+            scan(&mut o);
+            assert_eq!(
+                o.camera_blocked,
+                Some(why.clone()),
+                "{how}: rescan, nothing changed"
+            );
+            match how {
+                "approved" => {
+                    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644))
+                        .unwrap()
+                }
+                _ => std::fs::remove_file(&locked).unwrap(),
+            }
+            scan(&mut o);
+            assert_eq!(o.camera_blocked, None, "{how}");
+            assert!(!o.camera_fix_shown, "{how}");
+            assert!(
+                o.events.iter().any(|(k, m)| *k == ToastKind::Success
+                    && m == "Camera access approved; the camera opens now."),
+                "{how}: {:?}",
+                o.events
+            );
+            let t = Instant::now();
+            assert!(!o.camera_recheck_due(t, true), "{how}: the recheck stops");
+            assert!(o.camera.is_some(), "{how}: the held camera stays open");
+        }
         crate::test_dir::fail_late();
     }
 

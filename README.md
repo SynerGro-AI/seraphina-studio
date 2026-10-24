@@ -250,7 +250,11 @@ on Linux it shows the fix, `sudo usermod -aG video $USER`, then log out and
 back in, plus *Re-scan*. While access is blocked and the panel is open, the
 app checks again every 2 s and as soon as the window regains focus (re-scan,
 then a test open, since Windows only refuses at open), and says so once the
-camera opens. macOS: planned with AVFoundation. Tests:
+camera opens. While a camera is already held open (preview, recording or
+stream) no test open runs, so a scan that names no blocked node (it was
+approved, or unplugged) ends Approve, the reason and the rechecks, with the
+same "approved" message. With one camera usable and another blocked,
+opening the usable one doesn't count as approved. macOS: planned with AVFoundation. Tests:
 `v4l2_list_reports_a_node_it_is_not_allowed_to_open` (a real mode-000 node
 is blocked, an empty folder is "no camera"),
 `v4l2_list_shows_usable_and_blocked_cameras_together` and
@@ -262,7 +266,11 @@ process as `nobody` (file modes don't bind root) and fail with the reason
 if privileges can't be dropped; they never skip,
 `windows_access_denied_at_activation_is_blocked_access`,
 `approve_on_windows_opens_the_camera_privacy_page`,
-`blocked_camera_access_is_rechecked_on_a_timer_and_on_focus`.
+`blocked_camera_access_is_rechecked_on_a_timer_and_on_focus`,
+`opening_a_usable_camera_keeps_approve_while_another_is_blocked`,
+`a_held_camera_lifts_the_block_once_the_blocked_node_is_approved_or_unplugged`
+(a real mode-000 node opened up or deleted, rescanned with the real probe,
+while a real Feed is held open).
 
 Encoding is
 libx264 (veryfast, zerolatency) + AAC (silent track by default); recordings are
