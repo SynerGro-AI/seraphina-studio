@@ -112,7 +112,8 @@ const TESTS_USING_TEMP: &[&str] = &[
 
 /// Re-runs every test that writes into temp in a child process, each made to
 /// fail at its very end, then checks the temp dir holds nothing named with
-/// the child's process id: a test that panics must still remove its files.
+/// the child's process id and no PulseAudio null sink of the mic test is
+/// still loaded: a test that panics must still remove what it made.
 #[test]
 #[cfg_attr(
     not(target_os = "linux"),
@@ -155,6 +156,22 @@ fn the_tests_leave_nothing_in_temp_even_when_they_fail() {
             left.is_empty(),
             "failing tests left these in {}: {left:?}",
             std::env::temp_dir().display()
+        );
+        // the mic test's null sink is unloaded too
+        let sink = format!("seraphina_mic_test_{pid}");
+        let mods = std::process::Command::new("pactl")
+            .args(["list", "short", "modules"])
+            .output()
+            .expect("pactl not found: install pulseaudio-utils");
+        assert!(mods.status.success(), "pactl list modules: {mods:?}");
+        let mods = String::from_utf8_lossy(&mods.stdout);
+        let loaded: Vec<&str> = mods
+            .lines()
+            .filter(|l| l.split(['\t', ' ', '=']).any(|t| t == sink))
+            .collect();
+        assert!(
+            loaded.is_empty(),
+            "the failing mic test left its null sink loaded: {loaded:?}"
         );
     }
 }

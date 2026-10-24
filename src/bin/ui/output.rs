@@ -3663,6 +3663,31 @@ mod tests {
             .expect("pactl not found: install pulseaudio-utils")
     }
 
+    /// A PulseAudio null sink this test loaded. Dropping it (also when the
+    /// test fails) unloads it, so no sink is left on the audio server.
+    struct NullSink(String);
+
+    impl NullSink {
+        fn load(name: &str) -> NullSink {
+            let m = pactl(&[
+                "load-module",
+                "module-null-sink",
+                &format!("sink_name={name}"),
+            ]);
+            assert!(m.status.success(), "load null sink: {m:?}");
+            NullSink(String::from_utf8_lossy(&m.stdout).trim().to_string())
+        }
+    }
+
+    impl Drop for NullSink {
+        fn drop(&mut self) {
+            let o = pactl(&["unload-module", &self.0]);
+            if !o.status.success() {
+                eprintln!("could not unload null sink module {}: {o:?}", self.0);
+            }
+        }
+    }
+
     /// Fraction of the audio track's energy at `hz` (Goertzel on mono
     /// 48 kHz PCM decoded by ffmpeg; needs at least 2 s). A pure tone at `hz` gives about 1.0;
     /// silence or any other tone gives about 0.
@@ -3721,13 +3746,7 @@ mod tests {
             "needs a running PulseAudio server (pulseaudio --start)"
         );
         let sink = format!("seraphina_mic_test_{}", std::process::id());
-        let m = pactl(&[
-            "load-module",
-            "module-null-sink",
-            &format!("sink_name={sink}"),
-        ]);
-        assert!(m.status.success(), "load null sink: {m:?}");
-        let module = String::from_utf8_lossy(&m.stdout).trim().to_string();
+        let _sink = NullSink::load(&sink);
         let tmp = crate::test_dir::TestDir::new("mic");
         let dir = tmp.path().to_path_buf();
         let tone = dir.join("tone.wav");
@@ -3765,7 +3784,6 @@ mod tests {
         let msg = o.stop_record().expect("stop record");
         let _ = play.kill();
         let _ = play.wait();
-        let _ = pactl(&["unload-module", &module]);
         assert!(msg.contains("saved"), "{msg} {ev:?}");
         assert!(ev.iter().all(|(k, _)| *k != ToastKind::Error), "{ev:?}");
         let p = probe(&ff, &path.to_string_lossy()).expect("ffprobe");
