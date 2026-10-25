@@ -141,23 +141,7 @@ fn write_report_at(
     let base = format!("{}-{}-{}", prefix, stamp, std::process::id());
     // Start after the highest number already used this second, so a name
     // freed by pruning is never reused (it would sort as the oldest).
-    let mut n = next_number(dir, &base);
-    let (path, mut f) = loop {
-        let path = dir.join(if n == 1 {
-            format!("{base}.txt")
-        } else {
-            format!("{base}-{n}.txt")
-        });
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(f) => break (path, f),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
-            Err(e) => return Err(e),
-        }
-    };
+    let (path, mut f) = create_unique(dir, &base, next_number(dir, &base))?;
     let body = format!(
         "Seraphina Studio {} crash report\nTime: {}\nOS: {} {}\nRenderer: {}\nThread: {}\n\n{}\n\n{}\n",
         env!("CARGO_PKG_VERSION"),
@@ -179,6 +163,30 @@ fn write_report_at(
 
 pub fn write_report(prefix: &str, what: &str, detail: &str) -> std::io::Result<PathBuf> {
     write_report_in(&logs_dir(), prefix, what, detail)
+}
+
+/// Open `<base>.txt` or `<base>-<n>.txt` from number `n` up, never an existing file.
+/// `n` comes from [`next_number`], but another writer in this process can take
+/// that name before the open (the main thread's "Startup failed" report and a
+/// background thread's panic report in the same second), so the open itself
+/// refuses existing files (`create_new`) and moves on to the next number.
+fn create_unique(dir: &Path, base: &str, mut n: u32) -> std::io::Result<(PathBuf, std::fs::File)> {
+    loop {
+        let path = dir.join(if n == 1 {
+            format!("{base}.txt")
+        } else {
+            format!("{base}-{n}.txt")
+        });
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(f) => return Ok((path, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// One more than the highest same-second number among `dir`'s reports
@@ -522,6 +530,21 @@ mod tests {
         prune(dir);
         assert_eq!(list(dir, |_| true).len(), KEEP);
         crate::test_dir::fail_late();
+    }
+
+    /// A stale start number (another writer took that name since it was
+    /// counted) never overwrites: the existing report is kept, the next name is used.
+    #[test]
+    fn a_name_taken_after_counting_is_never_overwritten() {
+        let tmp = crate::test_dir::TestDir::new("crash_taken_name");
+        let dir = tmp.path();
+        std::fs::write(dir.join("crash-x.txt"), "earlier report").unwrap();
+        let (p, _f) = create_unique(dir, "crash-x", 1).unwrap();
+        assert_eq!(p, dir.join("crash-x-2.txt"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("crash-x.txt")).unwrap(),
+            "earlier report"
+        );
     }
 
     /// Reports in the same second (a background panic and then the
