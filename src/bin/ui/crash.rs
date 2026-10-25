@@ -157,7 +157,7 @@ fn write_report_at(
         detail
     );
     f.write_all(redact(&body).as_bytes())?;
-    prune(dir);
+    prune(dir, Some(&path));
     Ok(path)
 }
 
@@ -235,14 +235,18 @@ fn sort_by_age(v: &mut [PathBuf]) {
     v.sort_by_cached_key(|p| age_key(p));
 }
 
-/// Keep the newest `KEEP` reports.
-fn prune(dir: &Path) {
+/// Keep the newest `KEEP` reports. The report `written` just now always
+/// stays, even when the clock went back and it sorts as the oldest: its path
+/// is what the message box shows. An older one goes in its place.
+fn prune(dir: &Path, written: Option<&Path>) {
     let mut v: Vec<PathBuf> = list(dir, |_| true);
-    if v.len() <= KEEP {
+    let had = v.len();
+    if had <= KEEP {
         return;
     }
     sort_by_age(&mut v);
-    for p in &v[..v.len() - KEEP] {
+    v.retain(|p| Some(p.as_path()) != written);
+    for p in &v[..had - KEEP] {
         let _ = std::fs::remove_file(p);
     }
 }
@@ -527,9 +531,35 @@ mod tests {
         for i in 0..(KEEP + 5) {
             std::fs::write(dir.join(format!("crash-0000-{:03}.seen.txt", i)), "x").unwrap();
         }
-        prune(dir);
+        prune(dir, None);
         assert_eq!(list(dir, |_| true).len(), KEEP);
         crate::test_dir::fail_late();
+    }
+
+    /// With the clock set back, the report just written sorts as the
+    /// oldest; pruning still keeps it (the message box points at it) and
+    /// drops the oldest of the others instead.
+    #[test]
+    fn a_report_written_with_the_clock_set_back_is_kept() {
+        let tmp = crate::test_dir::TestDir::new("crash_clock_back");
+        let dir = tmp.path();
+        let t0 = 1_793_000_000;
+        let made: Vec<PathBuf> = (0..KEEP as u64)
+            .map(|i| write_report_at(dir, "crash", "later clock", "", t0 + 100 + i).unwrap())
+            .collect();
+        let p = write_report_at(dir, "crash", "clock set back", "", t0).unwrap();
+        assert!(
+            std::fs::read_to_string(&p)
+                .unwrap()
+                .contains("clock set back"),
+            "the report just written is still there"
+        );
+        let mut left = list(dir, |_| true);
+        left.sort();
+        let mut want = made[1..].to_vec();
+        want.push(p);
+        want.sort();
+        assert_eq!(left, want, "the oldest of the others went instead");
     }
 
     /// A stale start number (another writer took that name since it was
