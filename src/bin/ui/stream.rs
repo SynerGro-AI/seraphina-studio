@@ -10,6 +10,12 @@ use obs_rust_bitstream::stream_inspect::{sample_stream, to_binary, CounterMode, 
 use obs_rust_bitstream::ui_canvas::Raster;
 
 pub const WIDTHS: [u32; 7] = [1, 2, 3, 4, 5, 8, 16];
+/// Opened at startup; shipped next to the exe in the Windows zip.
+pub const STARTUP_SAMPLE: &str = "out.obsr";
+/// Default path in the Open box; shipped next to the exe in the Windows zip.
+pub const DEFAULT_OPEN: &str = "out.h264";
+/// Every file named here must ship next to the exe (tested in main.rs).
+pub const OPEN_HINT: &str = "Try out.h264 or out.obsr, next to the app or in the repo root.";
 const RUN_LIMIT: usize = 4096;
 
 pub struct StreamState {
@@ -22,15 +28,15 @@ pub struct StreamState {
 
 impl StreamState {
     pub fn new() -> Self {
-        let default = resolve_asset("out.obsr");
+        let default = resolve_asset(STARTUP_SAMPLE);
         let (data, source) = match std::fs::read(&default) {
-            Ok(d) if !d.is_empty() => (d, "out.obsr".to_string()),
+            Ok(d) if !d.is_empty() => (d, STARTUP_SAMPLE.to_string()),
             _ => (sample_stream(), "Built-in sample (320 bytes)".to_string()),
         };
         Self {
             insp: StreamInspector::new(data, CounterMode::Safe),
             source,
-            path: "out.h264".to_string(),
+            path: DEFAULT_OPEN.to_string(),
             width: 8,
             follow: true,
         }
@@ -203,10 +209,7 @@ impl StreamState {
                     self.load_sample(toasts);
                 }
             });
-            ui.label(theme::muted(
-                p,
-                "Try out.h264, out.avbn or out.obsr from the repo root.",
-            ));
+            ui.label(theme::muted(p, OPEN_HINT));
         });
     }
 
@@ -600,4 +603,13 @@ impl StreamState {
         self.path = f.path;
         Ok(())
     }
+}
+
+/// File names (`stem.ext`) mentioned in UI text such as `OPEN_HINT`.
+#[cfg(test)]
+pub fn files_named_in(text: &str) -> Vec<&str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        .map(|w| w.trim_matches('.'))
+        .filter(|w| matches!(w.split_once('.'), Some((a, b)) if !a.is_empty() && !b.is_empty()))
+        .collect()
 }

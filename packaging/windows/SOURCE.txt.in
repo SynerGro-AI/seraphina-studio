@@ -1,0 +1,17 @@
+Seraphina Studio is free software under the GNU General Public License,
+version 2 or (at your option) any later version. See LICENSE.
+
+This build: {{REF}}, commit {{SHA}}.
+Complete source for this build, including Cargo.lock (which pins every
+Rust dependency to an exact crates.io version):
+  https://github.com/{{REPO}}/tree/{{SHA}}
+The release page for a tagged version also carries the source archive.
+
+Build it yourself (Windows, MSVC Rust toolchain):
+  git clone https://github.com/{{REPO}}.git
+  cd {{REPO_NAME}}
+  git checkout {{SHA}}
+  cargo build --locked --release
+
+ffmpeg is NOT included. If you ship ffmpeg.exe with this program, you
+must also ship its licence and offer its source (see README.txt).

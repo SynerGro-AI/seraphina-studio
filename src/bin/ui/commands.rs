@@ -382,6 +382,9 @@ pub enum AppCommand {
     RetryStream,
     SetOutputSource {
         source: String,
+        /// Camera source only: the camera's name or device path.
+        #[serde(default)]
+        device: Option<String>,
     },
     SetStreamTarget {
         url: String,
@@ -615,7 +618,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ToolSpec { name: "set_streaming", description: "Go live to the RTMP target from Settings via ffmpeg, or end the stream. Starting needs the user.", params: obj(json!({ "live": b("live") }), &["live"]) },
         ToolSpec { name: "set_recording", description: "Start/stop recording the canvas (or screen) to MP4 via ffmpeg. Starting needs the user.", params: obj(json!({ "recording": b("recording") }), &["recording"]) },
         ToolSpec { name: "retry_stream", description: "Reconnect the live stream now (after a dropped connection).", params: obj(json!({}), &[]) },
-        ToolSpec { name: "set_output_source", description: "What recording/streaming captures.", params: obj(json!({ "source": { "type": "string", "enum": ["canvas", "screen"] } }), &["source"]) },
+        ToolSpec { name: "set_output_source", description: "What recording/streaming captures: the canvas, the screen, or a camera (webcam).", params: obj(json!({ "source": { "type": "string", "enum": ["canvas", "screen", "camera"] }, "device": s("camera source: the camera's name or device path; omit to keep the current one (empty = first camera found)") }), &["source"]) },
         ToolSpec { name: "set_stream_target", description: "RTMP server URL (the stream key is set by the user in Settings).", params: obj(json!({ "url": s("rtmp://host/app") }), &["url"]) },
         ToolSpec { name: "generate_image", description: "Generate an image with Grok Imagine and add it to Paint as a new layer (user approval required; billed per image).", params: obj(json!({ "prompt": s("prompt") }), &["prompt"]) },
         ToolSpec { name: "video_generate", description: "Queue a Grok Imagine video generation (user approval required).", params: obj(json!({ "prompt": s("prompt"), "duration": n("seconds 1-15") }), &["prompt"]) },
@@ -651,8 +654,8 @@ mod tests {
         let specs = tool_specs();
         let mut md = format!(
             "# AI tools\n\nGenerated from `tool_specs()` in `src/bin/ui/commands.rs`; \
-             `cargo test --features ui --bin ui ai_tools_doc` checks it. \
-             Regenerate with `cargo test --features ui --bin ui -- --ignored \
+             `cargo test --bin ui ai_tools_doc` checks it. \
+             Regenerate with `cargo test --bin ui -- --ignored \
              regenerate_ai_tools_doc`.\n\n{} tools.\n\n| Tool | What it does |\n|------|--------------|\n",
             specs.len()
         );

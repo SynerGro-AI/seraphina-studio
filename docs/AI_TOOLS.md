@@ -1,6 +1,6 @@
 # AI tools
 
-Generated from `tool_specs()` in `src/bin/ui/commands.rs`; `cargo test --features ui --bin ui ai_tools_doc` checks it. Regenerate with `cargo test --features ui --bin ui -- --ignored regenerate_ai_tools_doc`.
+Generated from `tool_specs()` in `src/bin/ui/commands.rs`; `cargo test --bin ui ai_tools_doc` checks it. Regenerate with `cargo test --bin ui -- --ignored regenerate_ai_tools_doc`.
 
 101 tools.
 
@@ -101,7 +101,7 @@ Generated from `tool_specs()` in `src/bin/ui/commands.rs`; `cargo test --feature
 | `set_streaming` | Go live to the RTMP target from Settings via ffmpeg, or end the stream. Starting needs the user. |
 | `set_recording` | Start/stop recording the canvas (or screen) to MP4 via ffmpeg. Starting needs the user. |
 | `retry_stream` | Reconnect the live stream now (after a dropped connection). |
-| `set_output_source` | What recording/streaming captures. |
+| `set_output_source` | What recording/streaming captures: the canvas, the screen, or a camera (webcam). |
 | `set_stream_target` | RTMP server URL (the stream key is set by the user in Settings). |
 | `generate_image` | Generate an image with Grok Imagine and add it to Paint as a new layer (user approval required; billed per image). |
 | `video_generate` | Queue a Grok Imagine video generation (user approval required). |

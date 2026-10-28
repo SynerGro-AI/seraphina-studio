@@ -1,0 +1,16 @@
+# What goes in the Windows zip, one entry per line:  <path in zip>  <from>
+# <from> is relative to the repo root; $EXE is the -Exe argument (the built
+# ui.exe); a .in file has {{REF}} {{SHA}} {{REPO}} {{REPO_NAME}} filled in.
+# A path ending in / is a folder: <from> is a folder or a glob.
+# stage.ps1 copies these to the top of a folder that becomes the zip root,
+# for ci.yml's windows-ui artifact (and a planned release zip), so the docs sit
+# next to the exe. The ui tests check this list against ci.yml and
+# README.txt's FILES IN THIS FOLDER, and run stage.ps1.
+SeraphinaStudio.exe   $EXE
+README.txt            packaging/windows/README.txt
+LICENSE               LICENSE
+SOURCE.txt            packaging/windows/SOURCE.txt.in
+assets/               assets
+scripts/              docs/scripts/*.jsonl
+out.obsr              out.obsr
+out.h264              out.h264

@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.88"
 description = "Seraphina Studio (paint, composite, 3D, animate, stream, materials lab) and the library behind it."
 license = "GPL-2.0-or-later"
-repository = "https://github.com/SynerGro-AI/obs-rust-bitstream"
+repository = "https://github.com/SynerGro-AI/seraphina-studio"
 readme = "README.md"
 keywords = ["paint", "physics", "streaming", "egui", "bitstream"]
 categories = ["multimedia", "encoding"]
@@ -29,13 +29,21 @@ zip = { version = "9", optional = true, default-features = false, features = ["d
 dirs = { version = "6", optional = true }
 rfd = { version = "0.17", optional = true, default-features = false, features = ["xdg-portal"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# UI only: V4L2 camera capture (ioctl, mmap, poll)
+libc = { version = "0.2", optional = true }
+
 [target.'cfg(windows)'.dependencies]
 # UI only: crash message box, Credential Manager, single-instance focus
 windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging"] }
+# UI only: Media Foundation camera capture (COM interfaces)
+windows = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }
 
 [features]
-default = []
-ui = ["eframe", "image", "dep:egui-phosphor", "dep:serde", "dep:serde_json", "dep:ureq", "dep:ab_glyph", "dep:epaint_default_fonts", "dep:zip", "dep:rfd", "dep:dirs", "dep:windows-sys"]
+# The app is on by default so a plain `cargo build --release` produces
+# target/release/ui(.exe). Library-only users: --no-default-features.
+default = ["ui"]
+ui = ["eframe", "image", "dep:egui-phosphor", "dep:serde", "dep:serde_json", "dep:ureq", "dep:ab_glyph", "dep:epaint_default_fonts", "dep:zip", "dep:rfd", "dep:dirs", "dep:windows-sys", "dep:libc", "dep:windows"]
 
 
 [[bin]]
@@ -44,6 +52,6 @@ path = "src/bin/ui/main.rs"
 required-features = ["ui"]
 
 # Optimise dependencies (image decode, egui) even in debug builds so
-# `cargo run --features ui --bin ui` stays responsive.
+# `cargo run` stays responsive.
 [profile.dev.package."*"]
 opt-level = 2

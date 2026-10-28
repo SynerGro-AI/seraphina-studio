@@ -1,4 +1,4 @@
-# Audit: SynerGro-AI/obs-rust-bitstream (UI focus)
+# Audit: SynerGro-AI/obs-rust-bitstream, now SynerGro-AI/seraphina-studio (UI focus)
 
 Date: 2026-10-20 (America/Edmonton, MDT)
 Clone: `/workspace/obs-rust-bitstream`. Base: `main` @ `b0046ec`. Work is on the local branch `ui-polish` and has **not been pushed**.
@@ -8,7 +8,7 @@ This is a Rust library crate of about 644 files and about 61.6k lines. It contai
 
 ## 2. How to run
 * **Windows (primary):** install Rust (MSVC toolchain), then run `cargo run --release --features ui --bin ui`. See the README section "Desktop app: Seraphina Studio".
-* **Prebuilt Windows bundle (cross-compiled):** `/workspace/obs-ui-windows/SeraphinaStudio-windows-x64.zip`. It contains the exe, `assets/` and the `out.*` sample files.
+* **Prebuilt Windows bundle:** the `windows-ui` artifact of a CI run (`.github/workflows/ci.yml` builds it with MSVC and stages it with `packaging/windows/stage.ps1`; `packaging/windows/zip-files.txt` lists its files: the exe, `README.txt`, `LICENSE`, `SOURCE.txt`, `assets/`, `scripts/` and the `out.*` samples). The cross-compiled zip this audit first used was built by hand outside the repo and is not available.
 * **Linux:** `cargo run --release --features ui --bin ui`. Needs a GL driver and libxkbcommon-x11.
 * **Cross-compile:** `rustup target add x86_64-pc-windows-gnu`, install `mingw-w64`, then run `cargo build --release --features ui --bin ui --target x86_64-pc-windows-gnu`.
 * **Env:** `SERAPHINA_MODE=stream|paint|3d|animate|composite` and `SERAPHINA_LIGHT=1`.
@@ -24,7 +24,7 @@ This is a Rust library crate of about 644 files and about 61.6k lines. It contai
 | Windows cross-compile (gnu) | **Fails** (see R2) | OK, 0 warnings, PE32+ GUI-subsystem exe |
 | Toolchain | System rustc 1.85 too old for the deps | rustup stable 1.99.1 |
 
-Windows exe: `/workspace/obs-rust-bitstream/target/x86_64-pc-windows-gnu/release/ui.exe` (about 19.3 MB). I did **not** execute it, because the box has no Windows and no Wine.
+Windows exe: `target/x86_64-pc-windows-gnu/release/ui.exe` (from the cross-compile command above) (about 19.3 MB). I did **not** execute it, because the box has no Windows and no Wine.
 
 > **Update (v1 cleanup, 2026-10-24):** this is no longer true. The Windows
 > build now runs under Wine on the box (lib and ui tests, plus a launch
@@ -89,7 +89,7 @@ The old UI was replaced by **Seraphina Studio** (`src/bin/ui/`: main, theme, str
 | Docking | Panels can be toggled and resized only; no drag-and-drop docking |
 
 ## 7. Screenshots (real captures via Xvfb with software GL on Linux)
-`/workspace/obs-ui-shots/`: `01_stream_dark`, `02_paint_dark`, `03_3d_dark`, `04_animate_dark`, `05_composite_dark`, `06_assistant_chat`, `07_shortcuts`, and `08_{stream,paint,3d,animate,composite}_light` (all `.png`).
+Taken on the audit box and not in the repo (so not available to readers): `01_stream_dark`, `02_paint_dark`, `03_3d_dark`, `04_animate_dark`, `05_composite_dark`, `06_assistant_chat`, `07_shortcuts`, and `08_{stream,paint,3d,animate,composite}_light` (all `.png`).
 
 ## 8. Remaining gaps and recommendations
 1. Run the exe on real Windows (DPI scaling, GPU driver, file dialogs). It has only been cross-compiled.

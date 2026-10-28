@@ -1,9 +1,11 @@
-# obs-rust-bitstream
+# seraphina-studio
 
 **Seraphina Studio**, a desktop app for paint, composite, 3D, animation,
 streaming and a materials lab, and the tested Rust library behind it. It
 started as a Rust port of OBS's `bitstream_reader` (still here as
 `bitstream`, with its C ABI); recording and streaming go through ffmpeg.
+The GitHub repo is [SynerGro-AI/seraphina-studio](https://github.com/SynerGro-AI/seraphina-studio)
+(formerly `obs-rust-bitstream`, which is still the crate's name).
 
 ## Desktop app: Seraphina Studio
 
@@ -19,7 +21,7 @@ Linux (the CI tests run there). macOS is untested.
 | **3D** | Software rasterizer: z-buffered flat/Lambert shading, Shaded / Wireframe / Shaded+wire (keys 5/4/6), selection highlight; orbit/dolly; cube, plane, cylinder, joint, light, camera; extrude, bevel, **Edge Loop, Multi-Cut, Bridge, Boolean union/difference/intersection (BSP, watertight after T-junction repair), Quad Draw**; Select/Move/Rotate/Scale (Q/W/E/R); outliner; keyframed Y; general undo/redo (drags coalesce) | Per-object **materials** (Blinn-Phong, metal vs dielectric, transparency) and the **Physics Arena** (see Materials Lab below). No textures, no smooth shading, no IK/skinning/FX/render-to-file (still "Coming soon") |
 | **Materials** | Periodic table of all 118 elements (search, category filter, detail card); composition builder (formula or protons/neutrons/electrons) with stability and charge analysis; derived PBR and simulation properties; measured presets; save to the library and assign to 3D meshes | Compound/alloy properties are estimates (see below) |
 | **Animate** | Frame-by-frame drawing, onion skin, new/duplicate/clear/delete frames, fps, playback, undo | No export, no layers per frame |
-| **Stream** | Bitstream inspector driving the real `bitstream::Reader`; **real Record (MP4 H.264+AAC) and Go live (RTMP) through an ffmpeg subprocess**, canvas or screen source, status bar with elapsed time, fps, bitrate, dropped frames and errors, reconnect with exponential backoff | Needs ffmpeg installed (not bundled). Capture-device audio is tested on Linux (PulseAudio, `records_audio_from_a_real_pulse_source`); Windows DirectShow is not yet verified on hardware. On macOS, Capture device is refused as unsupported (`record_refuses_capture_audio_without_a_usable_device`). A device that can't be opened stops the recording with an error; the app never substitutes a tone or silence |
+| **Stream** | Bitstream inspector driving the real `bitstream::Reader`; **real Record (MP4 H.264+AAC) and Go live (RTMP) through an ffmpeg subprocess**, canvas, screen or camera source (V4L2 on Linux, Media Foundation on Windows), status bar with elapsed time, fps, bitrate, dropped frames and errors, reconnect with exponential backoff, optional stream delay (0–300 s) | Needs ffmpeg installed (not bundled). Capture-device audio is tested on Linux (PulseAudio, `records_audio_from_a_real_pulse_source`); Windows DirectShow is not yet verified on hardware. On macOS, Capture device is refused as unsupported (`record_refuses_capture_audio_without_a_usable_device`). A device that can't be opened stops the recording with an error; the app never substitutes a tone or silence |
 | **Seraphina panel** | Real LLM agent (xAI by default) that operates the app through tool calls (see below), with streaming replies, an action log, one-click Undo and live preference learning | Without a key it runs in offline help mode: a fixed table of tips, no model call and no actions, and it says so |
 | **Grok Imagine panel** | Real text-to-video (`grok-imagine-video-1.5`) and text-to-image (`grok-imagine-image-2.0`). Images can be added as a Paint layer ("Image → layer") | Billed per second / per image on your xAI account |
 
@@ -179,7 +181,7 @@ approximate.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `XAI_API_KEY` (or `SERAPHINA_GROK_API_KEY`) | none | Enables the LLM and Grok Imagine. Never committed; read from the environment only |
+| `XAI_API_KEY` (or `SERAPHINA_GROK_API_KEY`) | none | Enables the LLM and Grok Imagine. Never committed. Optional: you can save a key in Settings instead (see "Where the xAI key comes from" below). A set variable is used instead of the saved key |
 | `SERAPHINA_MODEL` / `SERAPHINA_GROK_MODEL` | `grok-4.7` | Chat model |
 | `SERAPHINA_BASE_URL` / `SERAPHINA_GROK_ENDPOINT` | `https://api.x.ai/v1` | Any OpenAI-compatible server (a local server works without a key) |
 | `SERAPHINA_NO_STREAM` | unset | Disable SSE streaming |
@@ -190,52 +192,222 @@ approximate.
 | `SERAPHINA_NATIVE_FRAME` | unset | Use the OS title bar instead of the custom one |
 | `SERAPHINA_MODE` / `SERAPHINA_LIGHT` | Paint / dark | Start mode and theme |
 
+**Where the xAI key comes from** (`src/bin/ui/secrets.rs`, `xai_key`):
+
+1. `SERAPHINA_GROK_API_KEY`, then `XAI_API_KEY`. A blank value is skipped.
+   A set variable always wins over a saved key; Settings shows "from
+   environment" and, if you save a key anyway, says the variable stays in use.
+2. Otherwise the key saved in Settings ▸ Seraphina ▸ xAI API key. On
+   Windows it is a generic credential `SeraphinaStudio/xai_api_key` in
+   Windows Credential Manager. If Credential Manager refuses the save, and
+   on other platforms, it goes to a private file, `xai_api_key` in the studio
+   folder (`~/.seraphina/studio`; 0600 on Unix). On Windows a key found in
+   that file is moved into Credential Manager the first time it is read.
+   Forget removes the saved key.
+
+Tests: `secrets::tests::a_set_variable_wins_over_the_saved_xai_key` covers
+the order in step 1 and the saved key in step 2, with a real saved key in a
+test folder. `secrets::tests::file_store_roundtrip_and_clear` covers the
+file store (save, load, clear, 0600).
+`secrets::tests::vault_store_migrates_plaintext_file` covers Credential
+Manager save, load, clear and the move from the file; it runs only on
+Windows (it passes under Wine) and uses the stream-key slot, which goes
+through the same code.
+`secrets::tests::a_refused_credential_manager_save_falls_back_to_the_private_file`
+makes Credential Manager really refuse (a key over its 2,560-byte limit) and
+checks the key lands in the private file and loads back. It is `#[ignore]`:
+Wine has no such limit, so it needs a run on a real Windows PC with
+`--ignored`. Not yet verified: none of this has been checked on a real
+Windows PC.
+
 ### Recording and streaming (ffmpeg)
 
 Record and Go live run `ffmpeg` as a subprocess. The active mode's canvas is
 letterboxed to the output size (default 1280×720, 30 fps) and piped as raw RGBA
 to ffmpeg's stdin; a tick that can't be written in time counts as a dropped
-frame. Alternatively ffmpeg grabs the screen (x11grab / gdigrab). Encoding is
+frame. Alternatively ffmpeg grabs the screen (x11grab / ddagrab / gdigrab), or
+the Camera source pipes a webcam the same way (`src/bin/ui/camera.rs`: V4L2
+mmap streaming on Linux, YUYV or MJPEG; Media Foundation's source reader on
+Windows). A camera that stops sending ends the recording or stream with the
+reason; it never freezes on the last frame. If ffmpeg then can't finish the
+file, the recording error and its message say that too, with ffmpeg's reason
+(test `a_camera_failure_also_reports_a_recording_that_did_not_finish`, which
+records to `/dev/full`). macOS cameras (AVFoundation) are
+refused as unsupported for now.
+
+**Blocked camera access** (spec). When a camera exists but the system won't
+let the app use it, Settings ▸ Output says why and offers **Approve**;
+"No camera found" appears only when there is no camera at all. Nothing is
+hidden: with some cameras usable and others blocked, the picker lists the
+usable ones and names each blocked node (greyed, "access blocked", with its
+reason), and the panel shows every blocked node's reason with **Approve**; a
+node that fails to open for another reason is named too. Blocked means
+permission denied on the `/dev/videoN` node on Linux (the user isn't in the
+`video` group), or E_ACCESSDENIED when Media Foundation activates the camera
+on Windows (Settings ▸ Privacy & security ▸ Camera has desktop-app access
+off). Approve on Windows opens that page (`cmd /C start "" ms-settings:privacy-webcam`);
+on Linux it shows the fix, `sudo usermod -aG video $USER`, then log out and
+back in, plus *Re-scan*. While access is blocked and the panel is open, the
+app checks again every 2 s and as soon as the window regains focus (re-scan,
+then a test open, since Windows only refuses at open), and says so once the
+camera opens. While a camera is already held open (preview, recording or
+stream) no test open runs, so a scan that names no blocked node (it was
+approved, or unplugged) ends Approve, the reason and the rechecks, with the
+same "approved" message. With one camera usable and another blocked,
+opening the usable one doesn't count as approved, and an open counts only
+after a scan that succeeded (not before the first scan, nor after a failed
+one). Known limitation: if the scan itself keeps failing while a camera is
+held open (on Windows, when Media Foundation can't list the cameras), Approve
+and the old reason stay even though the open camera works, and the 2 s
+rechecks go on; they clear at the first scan that succeeds. This follows
+from the rule above (`opening_a_camera_approves_only_after_a_successful_scan`);
+the Windows case is not yet verified on Windows. macOS: planned with AVFoundation. Tests:
+`v4l2_list_reports_a_node_it_is_not_allowed_to_open` (a real mode-000 node
+is blocked, an empty folder is "no camera"),
+`v4l2_list_shows_usable_and_blocked_cameras_together` and
+`settings_list_usable_cameras_and_name_each_blocked_one` (a real readable
+node and real mode-000 nodes next to a usable camera; no V4L2 camera exists
+on the dev box, so that one is a `Device` as the capability query returns it),
+run as root, these three permission tests re-run themselves in a child
+process as `nobody` (file modes don't bind root) and fail with the reason
+if privileges can't be dropped; they never skip,
+`windows_access_denied_at_activation_is_blocked_access`,
+`approve_on_windows_opens_the_camera_privacy_page`,
+`blocked_camera_access_is_rechecked_on_a_timer_and_on_focus`,
+`opening_a_usable_camera_keeps_approve_while_another_is_blocked`,
+`a_held_camera_lifts_the_block_once_the_blocked_node_is_approved_or_unplugged`
+(a real mode-000 node opened up or deleted, rescanned with the real probe,
+while a real Feed is held open),
+`opening_a_camera_approves_only_after_a_successful_scan` (the failed scan
+is the real V4L2 scan of a missing folder).
+
+Encoding is
 libx264 (veryfast, zerolatency) + AAC (silent track by default); recordings are
 MP4, live output is FLV over RTMP. `-progress` output drives the status bar.
 A dropped live connection is retried with backoff (`Reconnect`, default 2 s,
 10 attempts); *Retry now* reconnects immediately.
 
+**Retry now stays dormant once live** (spec). *Retry now* is disabled as
+soon as the stream is confirmed live (ffmpeg reports progress; with a stream
+delay, the encoder is feeding the delay queue, so this holds inside the delay
+window too). It becomes active again only on a real failure: a dropped
+connection waiting to reconnect, a stream that gave up with an error, or a
+stream that is up but not flowing. `retry_stream` from the AI gets "nothing
+to retry" while live and never restarts a healthy stream. Tests:
+`retry_now_during_the_delay_keeps_a_healthy_stream`,
+`retry_now_reenables_after_a_real_drop`.
+
+**Stream delay** (Settings ▸ Output, 0–300 s, off by default) holds the live
+stream back, as OBS's stream delay does. The encoder then writes FLV to its
+stdout instead of RTMP; `encoder_packet` splits it into tags,
+`output_delay_queue` holds each one for the delay, and a second ffmpeg
+(`-c copy`, no re-encode) sends them to the server. Stream mode ▸ Output
+shows where viewers are. Stopping ends the stream at once and drops the
+unsent part. If either ffmpeg dies the other is killed and the whole stream
+reconnects. While the delay holds the stream back, health (for *Retry now*
+and for counting a reconnect as a success) is judged by the encoder feeding
+the delay queue, since nothing is on air yet. The delay is held in memory (300 s at 4.5 Mb/s is about
+170 MB). Recordings are never delayed.
+
 * ffmpeg lookup: `SERAPHINA_FFMPEG`, next to the exe (or `./ffmpeg/bin/`), then
   `PATH`. Missing ffmpeg gives a clear error with download links.
 * Settings ▸ Output: RTMP URL, stream key, size, fps, bitrate, audio, record
-  folder, reconnect. Saved in `~/.seraphina/studio/output.json`; the key lives
+  folder, reconnect, stream delay; with the Camera source, a camera picker (Refresh
+  re-scans) and a live preview. Saved in `~/.seraphina/studio/output.json`; the key lives
   alone in `~/.seraphina/studio/stream_key` (0600 on Unix), is shown masked,
   is scrubbed from ffmpeg error text and never reaches the AI context or logs.
   `set_stream_key` is UI-only (no AI tool).
 * All of it goes through the AppCommand bus (`set_recording`, `set_streaming`,
-  `retry_stream`, `set_output_source`, `set_stream_target`); starting output
+  `retry_stream`, `set_output_source` (canvas, screen, or camera with an
+  optional `device`), `set_stream_target`); starting output
   from Seraphina needs the user's approval.
 
-### Run on Windows (recommended)
+### Build and run on Windows (recommended)
 
-1. Install Rust with [rustup](https://rustup.rs) (`rustup-init.exe`). Keep the default
-   **MSVC** toolchain (`stable-x86_64-pc-windows-msvc`). If prompted, install the
-   Visual Studio Build Tools workload “Desktop development with C++”.
-2. In PowerShell:
+One-time setup:
 
-   ```powershell
-   git clone https://github.com/SynerGro-AI/obs-rust-bitstream.git
-   cd obs-rust-bitstream
-   $env:XAI_API_KEY = "<your key>"   # optional, enables Seraphina + Grok Imagine
-   cargo run --release --features ui --bin ui
-   ```
+1. Install the **Visual Studio Build Tools** (free:
+   <https://visualstudio.microsoft.com/visual-cpp-build-tools/>) with the
+   workload **"Desktop development with C++"** (it brings the MSVC compiler,
+   linker and Windows SDK). Rust's MSVC toolchain links with it, and the
+   `ring` crate (TLS for the xAI client) compiles a little C with it.
+2. Install Rust with `rustup-init.exe` from <https://rustup.rs> and accept the
+   default toolchain, `stable-x86_64-pc-windows-msvc`. The minimum Rust
+   version is 1.88.
+3. Install Git for Windows (<https://git-scm.com/download/win>).
+4. Open a **new** Command Prompt so `cargo` and `git` are on PATH.
 
-For Record / Go live put `ffmpeg.exe` next to the exe or on PATH (see
-`packaging/windows/README.txt`). The release build is `target\release\ui.exe`. It looks for `assets\` and the
-sample streams (`out.h264`, `out.obsr`) in the working directory, next to the
-exe, or up to four folders above it. Copy them alongside the exe to ship it.
-Release builds on Windows use the GUI subsystem, so no console window opens.
+Build, in a plain `cmd` window:
+
+```bat
+git clone https://github.com/SynerGro-AI/seraphina-studio
+cd seraphina-studio
+cargo build --release
+```
+
+The app (the `ui` feature) is on by default, so that builds the exe:
+**`target\release\ui.exe`**. Run it from the repo folder so it finds
+`assets\` and the sample streams (`out.h264`, `out.obsr`):
+
+```bat
+set XAI_API_KEY=<your key>
+target\release\ui.exe
+```
+
+The `set` line is optional and only lasts for that cmd window. It turns on
+the Seraphina assistant and Grok Imagine; you can also add the key in
+Settings. Without a key the assistant runs offline and says so.
+`cargo run --release` builds and starts in one step.
+
+The build needs no bash, pkg-config, CMake or NASM: there is no build
+script, the Linux-only crate (`libc`, for V4L2) is only pulled in on Linux,
+and the Windows crates (`windows`, `windows-sys`) only on Windows.
+
+**ffmpeg** is not bundled. Record and Go live run it as a separate program
+and look for it in this order: `SERAPHINA_FFMPEG` (full path to
+`ffmpeg.exe`), next to `ui.exe` (`target\release\ffmpeg.exe` or
+`target\release\ffmpeg\bin\ffmpeg.exe`), then PATH. For example, download
+`ffmpeg-release-essentials.zip` from <https://www.gyan.dev/ffmpeg/builds/>,
+unzip it and run `set SERAPHINA_FFMPEG=C:\ffmpeg\bin\ffmpeg.exe` before
+starting the app. Stream mode ▸ Output shows "ffmpeg found" when it works;
+without it Record and Go live say "ffmpeg was not found" (see
+`packaging/windows/README.txt`).
+
+To ship the app, copy `ui.exe`, `assets\` and the `out.*` files into one
+folder; it also searches next to the exe and up to three folders above it.
+The Windows zip (CI's `seraphina-studio-windows` artifact; a release zip
+from a planned release workflow, not in the repo yet) is built from one list, `packaging/windows/zip-files.txt`, by
+`packaging/windows/stage.ps1`. Everything sits at the zip root:
+`SeraphinaStudio.exe` (the renamed `ui.exe`) with `README.txt`, `LICENSE`,
+`SOURCE.txt`, `assets\`, `scripts\` and the `out.*` samples next to it.
+Release builds use the GUI subsystem, so no console window opens.
+
+**Unverified on Windows from the dev box:** these steps have not been run
+with the MSVC toolchain on real Windows. What is checked there is the
+`x86_64-pc-windows-gnu` cross-build (clippy, release build, and the UI tests
+under Wine). CI has a `windows-latest` MSVC job, but this branch has not
+been pushed, so it has not run on these changes yet. The first real-Windows
+run should confirm the Build Tools install, the
+`cargo build` above, and the camera and ffmpeg paths.
+
+**MSVC build and static CRT: not verified.** `.cargo/config.toml` links the
+C runtime into the MSVC exe (`+crt-static`) so that it should need no Visual
+C++ Redistributable, but no MSVC build has run yet, so this is not verified
+and `packaging/windows/README.txt` says so. The check,
+`this_exe_does_not_import_the_vc_runtime` (it reads the exe's import table),
+compiles only for `target_env = "msvc"`; the mingw build under Wine links
+the C runtime differently and proves nothing about it.
+
+**Hardware camera testing is manual.** No camera exists on the dev box or
+the CI runners, so `v4l2_reads_frames_from_a_real_device` and
+`media_foundation_reads_frames_from_a_real_camera` stay `#[ignore]`; run
+them by hand with `cargo test --bin ui -- --ignored reads_frames_from_a_real`
+on a machine with a camera (`SERAPHINA_TEST_CAMERA` picks the V4L2 node).
 
 ### Run on Linux / macOS
 
 ```bash
-cargo run --release --features ui --bin ui
+cargo run --release
 ```
 
 Linux needs an X11 or Wayland session with OpenGL. On minimal installs:
@@ -246,7 +418,7 @@ Linux needs an X11 or Wayland session with OpenGL. On minimal installs:
 ```bash
 sudo apt install mingw-w64
 rustup target add x86_64-pc-windows-gnu
-cargo build --release --features ui --bin ui --target x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu
 # -> target/x86_64-pc-windows-gnu/release/ui.exe
 ```
 
@@ -254,7 +426,8 @@ cargo build --release --features ui --bin ui --target x86_64-pc-windows-gnu
 
 ```bash
 cargo test --lib                       # library
-cargo test --features ui --bin ui      # UI, command bus, AI agent (mock provider), headless
+cargo test --bin ui                    # UI, command bus, AI agent (scripted test provider), headless
+cargo test --no-default-features       # library alone, without the app's dependencies
 ```
 
 Tests that need an outside program fail with a message saying what is
@@ -262,10 +435,17 @@ missing; they never pass silently.
 
 * **ffmpeg** (or `SERAPHINA_FFMPEG`) is required by
   `records_five_seconds_to_mp4_verified_by_ffprobe` (5 s to MP4, checked with
-  ffprobe) and `goes_live_to_an_ffmpeg_rtmp_listener` (goes live to
+  ffprobe: 4.5-5.8 s long, every frame the writer sent is in the file, the
+  video is within 0.2 s of the wall clock, and the audio track is no longer
+  than the video by more than one AAC frame) and `goes_live_to_an_ffmpeg_rtmp_listener` (goes live to
   `ffmpeg -listen 1` on 127.0.0.1 and checks the received FLV with ffprobe).
+  `stream_delay_holds_the_stream_back_by_the_delay` (Linux: the relay must
+  not connect to the listener before the 4 s delay, viewers must trail the
+  encoder, and the listener must receive H.264) and
+  `a_dead_relay_ends_the_delayed_stream` (the relay can't connect, so the
+  encoder must be killed and the error reported) use it too, as do
   `concat_runs_off_thread` (stitches two clips) and
-  `stream_commands_and_status` (records through the command bus) need it too.
+  `stream_commands_and_status` (records through the command bus).
 * **mediamtx** at `~/opt/mediamtx/mediamtx` (or `MEDIAMTX`) is required on
   Linux by `streams_to_local_rtmp_and_reconnects_with_backoff`: it streams to a
   local RTMP server, confirms receipt under the stream key, kills the server
@@ -281,22 +461,27 @@ missing; they never pass silently.
   checks a nonexistent source stops the recording with an error. Both need
   ffmpeg; the first also needs a PulseAudio server (`pulseaudio --start`).
   Each fails, rather than passes, when what it needs is missing.
+* **pwsh** (PowerShell 7, or `SERAPHINA_PWSH`) is required on Linux by
+  `stage_script_puts_every_listed_file_at_the_top`: it runs
+  `packaging/windows/stage.ps1` as the workflows do and checks every
+  `zip-files.txt` entry lands at the top of the staged folder. Under Wine it
+  is ignored with the reason; the `windows-ui` CI job runs the script.
 
-On Windows (and under Wine) the ffmpeg and mediamtx tests are reported as
+On Windows (and under Wine) the ffmpeg, mediamtx and pwsh tests are reported as
 ignored with the reason. Every other opt-in test is `#[ignore]` with its
 reason in the attribute, and fails if what it needs is missing:
 
 ```bash
 # live, billed: need XAI_API_KEY
-cargo test --features ui --bin ui -- --ignored live_xai_tool_calling_smoke
-cargo test --features ui --bin ui -- --ignored live_xai_smoke_test
-SERAPHINA_LIVE_OUT=/tmp cargo test --features ui --bin ui -- --ignored live_imagine
+cargo test --bin ui -- --ignored live_xai_tool_calling_smoke
+cargo test --bin ui -- --ignored live_xai_smoke_test
+SERAPHINA_LIVE_OUT=/tmp cargo test --bin ui -- --ignored live_imagine
 # live, free (/models): needs XAI_API_KEY
-cargo test --features ui --bin ui -- --ignored live_xai_key_test
+cargo test --bin ui -- --ignored live_xai_key_test
 # needs the Seraphina.AGI CLI (pip install seraphina-agi)
-cargo test --features ui --bin ui -- --ignored real_cli_intents_end_to_end chat_routes_memory
+cargo test --bin ui -- --ignored real_cli_intents_end_to_end chat_routes_memory
 # billed: the CLI's plan-grok, needs the CLI and XAI_API_KEY
-cargo test --features ui --bin ui -- --ignored real_cli_plan_grok
+cargo test --bin ui -- --ignored real_cli_plan_grok
 ```
 
 ### Shortcuts
@@ -338,6 +523,7 @@ and has unit tests. Two tests hold this list to the code:
 - `computer`: Build a computer: transistors → gates → adder → register → CPU.
 - `element_data`: Physical data for all 118 elements, plus their place in the standard 18-column periodic table.
 - `element_props`: Extended per-element properties (embedded; never fetched at runtime).
+- `encoder_packet`: Encoder packets read from an FLV byte stream (after OBS's encoder_packet).
 - `joint`: Safe pure Joint (skeleton joint tool).
 - `joint_hierarchy`: Safe pure JointHierarchy (named joint tree core).
 - `live_weights`: Safe pure LiveWeights (runtime parameter store).
@@ -348,6 +534,7 @@ and has unit tests. Two tests hold this list to the code:
 - `material_registry`: Safe pure MaterialRegistry (named material store).
 - `materials_lab`: Safe pure MaterialsLab (materials science core).
 - `mesh3d`: Polygon meshes for the 3D workspace.
+- `output_delay_queue`: Hold encoder packets for a fixed delay before they go out (after OBS's obs-output-delay.c).
 - `paint_engine`: Paint engine behind Seraphina Studio's Paint mode.
 - `periodic_table`: Safe pure PeriodicTable (element lookup core).
 - `psd`: Safe pure Psd (Photoshop Document).
@@ -364,6 +551,10 @@ and has unit tests. Two tests hold this list to the code:
 
 ### Planned (not built)
 
+v0.1.0 is the release being cut now: everything above that is not in this
+section. It is pending its tag and the owner's approval, so it has no date
+here. v0.2.0 is the next milestone.
+
 Dates are targets, not promises, in America/Edmonton time. Milestones
 come from the fix plan: M4b is the rest of M4 after M4a; M5 is repo and
 release; M6 is physics; M7+ is one mode per milestone. Work after the
@@ -372,19 +563,24 @@ stay out of the code until a real implementation lands with tests.
 
 | Milestone | Target |
 |-----------|--------|
-| v1 cleanup and M4 part 2 (M4b) | Wed Oct 28, 2026 (target) |
+| M4 part 2 (M4b), part of v0.2.0 | Wed Oct 28, 2026 (target) |
 | First green CI run, with the CI steps run locally | Sun Nov 1, 2026 (target). The GitHub Actions run happens whenever the organisation's billing lock lifts; it does not unlock automatically |
-| v0.2.0 release | Fri Nov 6, 2026 (target, pending the owner's approval) |
+| v0.2.0 release: physics validation fixes, M4b with the local learner, shared-learning packs (C7), topic backgrounds (E7) | Fri Nov 6, 2026 (target, pending the owner's approval) |
 
 | Item | Target |
 |------|--------|
 | Seraphina.AGI integration: the app talks to Seraphina.AGI as a separate local process. Today the provider is Grok (xAI) through `src/bin/ui/llm.rs`; the only link now is the optional CLI bridge for memory intents | after v0.2.0 (proposed; not yet in the fix plan) |
 | Seraphina drives every mode, one learning system, chat saved with the project (C1, C4, C5/C6) | M4b: Wed Oct 28, 2026 (target) |
+| Local learner (C4: live weights, delta lessons) | v0.2.0: Fri Nov 6, 2026 (target) |
+| Physics validation fixes, including vacuum evaporation no longer dropping to 0 K (B4) and no spike when the last bit vaporises (B5), checked by the validation harness | v0.2.0: Fri Nov 6, 2026 (target) |
+| Shared learning (C7): signed, file-based glyph-card packs to share lessons between installs; LAN sharing later | v0.2.0: Fri Nov 6, 2026 (target) |
+| Topic backgrounds (E7) | v0.2.0: Fri Nov 6, 2026 (target) |
 | Remove `dist/` binaries and root clutter (G5–G7) | after v0.2.0 (M5) |
 | 64-bit physics, rotating bodies, contact graph (F1–F3) | after v0.2.0 (M6) |
-| Scenes and sources: window, game, browser, media, image, text and group sources; webcam capture (Media Foundation, AVFoundation, V4L2); the OBS source/scene/filter/encoder/service registries, transitions, hotkeys, profiles, replay buffer, virtual camera, studio mode; a frame pipe and per-source profiler; NVENC/QSV/AMF (E6) | after v0.2.0 (M7+, Stream) |
+| Scenes and sources: window, game, browser, media, image, text and group sources; webcam capture on macOS (AVFoundation; Linux V4L2 and Windows Media Foundation are built, as the Camera output source); the OBS source/scene/filter/encoder/service registries, transitions, hotkeys, profiles, replay buffer, virtual camera, studio mode; a frame pipe and per-source profiler; NVENC/QSV/AMF (E6) | after v0.2.0 (M7+, Stream) |
 | A Composite effects library: levels, tone curves, hue/saturation, colour balance, drop shadow, inner glow, blur, sharpen, posterize, threshold, crossfade (the old unused modules are deleted; the app's own filters live in `src/bin/ui/`) (E3) | after v0.2.0 (M7+, Composite) |
 | Microphone capture verified on real hardware on Windows (dshow) | after v0.2.0 (needs a run on a Windows PC with a microphone) |
+| Camera source verified on real hardware: a Windows webcam through Media Foundation (`media_foundation_reads_frames_from_a_real_camera`) and a Linux V4L2 device or v4l2loopback (`v4l2_reads_frames_from_a_real_device`); both tests are `#[ignore]` because the dev box has neither | after v0.2.0 (needs a run with a camera) |
 | Team features (organisation, invite, roles, presence) | after v0.2.0 |
 
 Removed and not planned, because the app already does the real thing:
@@ -394,7 +590,7 @@ Removed and not planned, because the app already does the real thing:
   while the server dropped the connection. The app streams through
   ffmpeg (`src/bin/ui/output.rs`).
 * Synthetic capture, camera and audio sources and the demo binaries that
-  used them (`run`, `ai_write`, `slice`, `raw_read`). None shipped; the
+  used them (real cameras are now the Camera output source) (`run`, `ai_write`, `slice`, `raw_read`). None shipped; the
   synthetic audio was labelled "live".
 * AI helpers in the library (`ai`, `ai_tools`, `ai_editor`,
   `ai_director`, `settings_assist`, …) that echoed the prompt. The app's
@@ -422,7 +618,7 @@ tools/            the OBS C-to-Rust parser and the element-data generator
 
 ```bash
 cargo test --lib
-cargo test --features ui --bin ui
+cargo test --bin ui
 ```
 
 ## Roadmap

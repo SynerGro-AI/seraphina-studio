@@ -1,6 +1,6 @@
 //! Seraphina Studio — unified creative-suite shell (egui / eframe).
 //!
-//! cargo run --release --features ui --bin ui
+//! cargo run --release
 //!
 //! Every button, shortcut and AI tool call goes through one typed
 //! command bus (`commands::AppCommand`, dispatched by `App::dispatch`).
@@ -12,6 +12,7 @@
 
 mod animate;
 mod assistant_panel;
+mod camera;
 mod commands;
 mod composite;
 mod crash;
@@ -30,6 +31,8 @@ mod secrets;
 mod settings;
 mod single;
 mod stream;
+#[cfg(test)]
+mod test_dir;
 mod text_raster;
 mod theme;
 mod tiled_tex;
@@ -49,11 +52,17 @@ use theme::{Palette, SP_LG, SP_MD, SP_SM, SP_XS};
 
 /// Find a bundled file: as given, next to the exe, or one/two/three levels up.
 pub fn resolve_asset(path: &str) -> std::path::PathBuf {
+    resolve_asset_from(path, std::env::current_exe().ok())
+}
+
+/// `resolve_asset` with the exe path passed in, so the unzipped release
+/// layout (files next to SeraphinaStudio.exe) can be tested.
+fn resolve_asset_from(path: &str, exe: Option<std::path::PathBuf>) -> std::path::PathBuf {
     let p = std::path::Path::new(path);
     if p.is_absolute() || p.exists() {
         return p.to_path_buf();
     }
-    if let Ok(exe) = std::env::current_exe() {
+    if let Some(exe) = exe {
         let mut dir = exe.parent().map(|d| d.to_path_buf());
         for _ in 0..4 {
             if let Some(d) = &dir {
@@ -433,6 +442,10 @@ pub struct App {
     xai_cache: Option<Option<(String, secrets::KeySource)>>,
     /// xAI tokens and cost, and the spend cap (C3).
     pub meter: usage::Meter,
+    /// Test scratch folders this App uses, removed when it drops (even
+    /// when the test panics). Last, so everything using them drops first.
+    #[cfg(test)]
+    test_dirs: Vec<test_dir::TestDir>,
 }
 
 pub fn install_fonts(ctx: &egui::Context) {
@@ -544,6 +557,8 @@ impl App {
             xai_test_rx: None,
             meter: usage::Meter::ephemeral(0.0),
             xai_cache: None,
+            #[cfg(test)]
+            test_dirs: Vec::new(),
         };
         if let Some(w) = app.assistant.prefs.load_warning.clone() {
             app.toasts.push(ToastKind::Warn, &w);
@@ -1021,21 +1036,40 @@ impl App {
                 }
             }
             C::RetryStream => self.output.retry(),
-            C::SetOutputSource { source } => match output::Source::parse(source) {
-                Some(s)
-                    if s != self.output.cfg.source
-                        && (self.output.is_live() || self.output.is_recording()) =>
-                {
-                    Err("stop recording and streaming before switching the source".into())
+            C::SetOutputSource { source, device } => {
+                let busy = self.output.is_live() || self.output.is_recording();
+                let dev = device.as_deref().map(str::trim);
+                match output::Source::parse(source) {
+                    Some(s)
+                        if busy
+                            && (s != self.output.cfg.source
+                                || dev.is_some_and(|d| d != self.output.cfg.camera_device)) =>
+                    {
+                        Err("stop recording and streaming before switching the source".into())
+                    }
+                    Some(s) if dev.is_some() && s != output::Source::Camera => {
+                        Err("only the camera source takes a device".into())
+                    }
+                    Some(s) => {
+                        self.output.cfg.source = s;
+                        if let Some(d) = dev {
+                            self.output.cfg.camera_device = d.to_string();
+                        }
+                        let what = match (s, self.output.cfg.camera_device.as_str()) {
+                            (output::Source::Camera, "") => "Camera (first camera found)".into(),
+                            (output::Source::Camera, d) => format!("Camera ({d})"),
+                            _ => s.label().to_string(),
+                        };
+                        self.output
+                            .save_config()
+                            .map(|_| format!("output source: {what}"))
+                    }
+                    None => Err(format!(
+                        "unknown source '{}' (canvas, screen, camera)",
+                        source
+                    )),
                 }
-                Some(s) => {
-                    self.output.cfg.source = s;
-                    self.output
-                        .save_config()
-                        .map(|_| format!("output source: {}", s.label()))
-                }
-                None => Err(format!("unknown source '{}' (canvas, screen)", source)),
-            },
+            }
             C::SetStreamTarget { url } => {
                 let u = url.trim();
                 if !u.is_empty() && !(u.starts_with("rtmp://") || u.starts_with("rtmps://")) {
@@ -1658,6 +1692,9 @@ impl App {
             .chain(std::mem::take(&mut self.video.spent))
         {
             self.meter.record(&u);
+        }
+        while let Some(w) = self.meter.take_warning() {
+            self.toasts.push(ToastKind::Warn, &w);
         }
         if let Some(why) = self.assistant.cap_hit.take() {
             self.toasts.push(ToastKind::Warn, &why);
@@ -3486,6 +3523,329 @@ mod tests {
     use egui::Pos2;
     use std::sync::Arc;
 
+    /// The Windows zip ships out.obsr and out.h264 next to
+    /// SeraphinaStudio.exe: Stream mode opens out.obsr at startup and
+    /// out.h264 is the default path in its Open box. Every file the Open
+    /// hint names must ship too. In-repo zip lists:
+    /// packaging/windows/zip-files.txt (what the workflows stage) and
+    /// packaging/windows/README.txt. Unzipped anywhere and started from
+    /// another folder, each must resolve next to the exe.
+    #[test]
+    fn stream_samples_resolve_next_to_the_exe_in_the_zip_layout() {
+        let hinted = stream::files_named_in(stream::OPEN_HINT);
+        assert!(!hinted.is_empty(), "the Open hint names no files");
+        let mut names = vec![stream::STARTUP_SAMPLE, stream::DEFAULT_OPEN];
+        names.extend(
+            hinted
+                .iter()
+                .filter(|n| !names.contains(n))
+                .collect::<Vec<_>>(),
+        );
+        let readme = include_str!("../../../packaging/windows/README.txt");
+        let zip = zip_files();
+        for name in &names {
+            assert!(
+                zip.iter().any(|(to, from)| to == name && from == name),
+                "{name} is used or named by Stream mode but packaging/windows/zip-files.txt does not ship it"
+            );
+            assert!(
+                lists_file(readme, name),
+                "{name} is used or named by Stream mode but packaging/windows/README.txt's FILES IN THIS FOLDER does not list it"
+            );
+        }
+        let root = crate::test_dir::TestDir::new("zip_layout");
+        let app = root.path().join("SeraphinaStudio");
+        std::fs::create_dir_all(&app).unwrap();
+        let exe = app.join("SeraphinaStudio.exe");
+        for name in &names {
+            assert!(
+                std::fs::metadata(name).map(|m| m.len()).unwrap_or(0) > 0,
+                "{name} must be a non-empty file in the repo root"
+            );
+            // A name that is not in the working directory, so only the
+            // next-to-the-exe lookup can find it.
+            let unique = format!("zip_layout_{}_{name}", std::process::id());
+            std::fs::copy(name, app.join(&unique)).unwrap();
+            assert!(!std::path::Path::new(&unique).exists());
+            let found = resolve_asset_from(&unique, Some(exe.clone()));
+            assert_eq!(found, app.join(&unique), "{name} not found next to the exe");
+            assert!(std::fs::metadata(&found).unwrap().len() > 0);
+        }
+    }
+
+    /// packaging/windows/zip-files.txt as (path in zip, from).
+    fn zip_files() -> Vec<(&'static str, &'static str)> {
+        include_str!("../../../packaging/windows/zip-files.txt")
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                assert_eq!(f.len(), 2, "zip-files.txt: {l}");
+                (f[0], f[1])
+            })
+            .collect()
+    }
+
+    /// The entries at the top of the zip an `actions/upload-artifact`
+    /// step makes from its `path:` lines. The action roots the zip at the
+    /// paths' deepest common folder (a lone folder is its own root), so
+    /// files listed from several folders keep their folders. `staged` is
+    /// the folder stage.ps1 fills and what it puts there.
+    fn artifact_entries(paths: &[&str], staged: Option<(&str, &[&str])>) -> Vec<String> {
+        let norm = |p: &str| p.trim_start_matches("./").trim_end_matches('/').to_string();
+        let is_dir = |p: &str| p.ends_with('/') || staged.is_some_and(|(d, _)| norm(d) == norm(p));
+        let dirs: Vec<Vec<String>> = paths
+            .iter()
+            .map(|p| {
+                let mut c: Vec<String> = norm(p).split('/').map(String::from).collect();
+                if !is_dir(p) {
+                    c.pop();
+                }
+                c
+            })
+            .collect();
+        let mut root = dirs.first().cloned().unwrap_or_default();
+        for d in &dirs {
+            let n = root.iter().zip(d).take_while(|(a, b)| a == b).count();
+            root.truncate(n);
+        }
+        let mut out = Vec::new();
+        for p in paths {
+            let rel: Vec<String> = norm(p)
+                .split('/')
+                .skip(root.len())
+                .map(String::from)
+                .collect();
+            let rel = rel.join("/");
+            match staged {
+                Some((d, inside)) if norm(d) == norm(p) => out.extend(inside.iter().map(|e| {
+                    if rel.is_empty() {
+                        e.to_string()
+                    } else {
+                        format!("{rel}/{e}")
+                    }
+                })),
+                _ if is_dir(p) => out.push(format!("{rel}/")),
+                _ => out.push(rel),
+            }
+        }
+        out
+    }
+
+    /// What ci.yml's windows-ui job uploads: the `path:` lines of its
+    /// upload-artifact step and the `-Dest` folder it runs stage.ps1 into.
+    fn ci_artifact(ci: &str) -> (Vec<&str>, Option<&str>) {
+        let job: Vec<&str> = ci
+            .lines()
+            .skip_while(|l| *l != "  windows-ui:")
+            .skip(1)
+            .take_while(|l| l.is_empty() || l.starts_with("   "))
+            .collect();
+        assert!(!job.is_empty(), "ci.yml has no windows-ui job");
+        let dest = job.iter().position(|l| l.contains("stage.ps1")).map(|i| {
+            let mut w = job[i..].iter().flat_map(|l| l.split_whitespace());
+            w.find(|t| *t == "-Dest");
+            w.next().expect("stage.ps1 -Dest needs a folder")
+        });
+        let up = job
+            .iter()
+            .position(|l| l.contains("uses: actions/upload-artifact"))
+            .expect("windows-ui has no upload-artifact step");
+        let at = up
+            + job[up..]
+                .iter()
+                .position(|l| l.trim_start().starts_with("path:"))
+                .expect("upload-artifact has no path");
+        let first = job[at].trim_start().trim_start_matches("path:").trim();
+        let paths = if first == "|" {
+            let indent = job[at + 1].len() - job[at + 1].trim_start().len();
+            job[at + 1..]
+                .iter()
+                .take_while(|l| l.len() - l.trim_start().len() >= indent && !l.trim().is_empty())
+                .map(|l| l.trim())
+                .collect()
+        } else {
+            vec![first]
+        };
+        (paths, dest)
+    }
+
+    #[test]
+    fn artifact_entries_root_the_zip_at_the_common_folder() {
+        assert_eq!(
+            artifact_entries(
+                &["App.exe", "packaging/windows/README.txt", "assets/"],
+                None
+            ),
+            ["App.exe", "packaging/windows/README.txt", "assets/"]
+        );
+        assert_eq!(
+            artifact_entries(&["x/a.txt", "x/b/c.txt"], None),
+            ["a.txt", "b/c.txt"]
+        );
+        let inside: &[&str] = &["App.exe", "README.txt"];
+        assert_eq!(
+            artifact_entries(&["pkg/"], Some(("pkg", inside))),
+            ["App.exe", "README.txt"]
+        );
+        assert_eq!(
+            artifact_entries(&["pkg", "LICENSE"], Some(("pkg", inside))),
+            ["pkg/App.exe", "pkg/README.txt", "LICENSE"]
+        );
+    }
+
+    /// README.txt, LICENSE and SOURCE.txt sit next to the exe at the top
+    /// of the windows-ui artifact zip, as packaging/windows/zip-files.txt
+    /// says; README.txt's FILES IN THIS FOLDER lists exactly those entries.
+    #[test]
+    fn ci_artifact_puts_the_docs_next_to_the_exe() {
+        let zip = zip_files();
+        let inside: Vec<&str> = zip.iter().map(|(to, _)| *to).collect();
+        let (paths, dest) = ci_artifact(include_str!("../../../.github/workflows/ci.yml"));
+        let entries = artifact_entries(&paths, dest.map(|d| (d, &inside[..])));
+        for need in ["SeraphinaStudio.exe", "README.txt", "LICENSE", "SOURCE.txt"] {
+            assert!(
+                inside.contains(&need),
+                "packaging/windows/zip-files.txt does not ship {need}"
+            );
+        }
+        for e in &inside {
+            assert!(
+                entries.iter().any(|x| x == e),
+                "the windows-ui artifact has no {e} at its root; it has {entries:?}"
+            );
+        }
+        let readme = include_str!("../../../packaging/windows/README.txt");
+        for e in &inside {
+            assert!(
+                lists_file(readme, &e.replace('/', "\\")),
+                "README.txt's FILES IN THIS FOLDER does not list {e}"
+            );
+        }
+        let listed = readme
+            .lines()
+            .skip_while(|l| l.trim() != "FILES IN THIS FOLDER")
+            .skip(2)
+            .take_while(|l| !l.trim().is_empty())
+            .filter_map(|l| l.split_whitespace().next())
+            .count();
+        assert_eq!(listed, inside.len(), "README.txt lists files the zip lacks");
+    }
+
+    /// Runs packaging/windows/stage.ps1, as ci.yml's windows-ui job does, and checks
+    /// the folder that becomes the zip root.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Wine has no pwsh; the windows-ui CI job runs stage.ps1 itself"
+    )]
+    fn stage_script_puts_every_listed_file_at_the_top() {
+        let pwsh = std::env::var("SERAPHINA_PWSH").unwrap_or_else(|_| "pwsh".into());
+        let dir = crate::test_dir::TestDir::new("stage");
+        let dest = dir.path().join("pkg");
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(&pwsh)
+            .args([
+                "-NoProfile",
+                "-File",
+                "packaging/windows/stage.ps1",
+                "-Dest",
+            ])
+            .arg(&dest)
+            .arg("-Exe")
+            .arg(&exe)
+            .args([
+                "-Ref",
+                "test",
+                "-Sha",
+                "0123abc",
+                "-Repo",
+                "SynerGro-AI/seraphina-studio",
+            ])
+            .output()
+            .unwrap_or_else(|e| {
+                panic!("can't run {pwsh} ({e}): install PowerShell 7 or set SERAPHINA_PWSH")
+            });
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut top: Vec<String> = std::fs::read_dir(&dest)
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                let n = e.file_name().into_string().unwrap();
+                if e.path().is_dir() {
+                    format!("{n}/")
+                } else {
+                    n
+                }
+            })
+            .collect();
+        top.sort();
+        let mut want: Vec<String> = zip_files().iter().map(|(to, _)| to.to_string()).collect();
+        want.sort();
+        assert_eq!(top, want);
+        assert_eq!(
+            std::fs::read(dest.join("SeraphinaStudio.exe")).unwrap(),
+            std::fs::read(&exe).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(dest.join("README.txt")).unwrap(),
+            std::fs::read("packaging/windows/README.txt").unwrap()
+        );
+        let source = std::fs::read_to_string(dest.join("SOURCE.txt")).unwrap();
+        assert!(
+            source.contains("tree/0123abc") && source.contains("cd seraphina-studio"),
+            "{source}"
+        );
+        assert!(!source.contains("{{"), "{source}");
+        for (to, _) in zip_files().iter().filter(|(to, _)| to.ends_with('/')) {
+            assert!(
+                std::fs::read_dir(dest.join(to)).unwrap().count() > 0,
+                "{to} is empty"
+            );
+        }
+    }
+
+    /// Whether README.txt's FILES IN THIS FOLDER section has an entry
+    /// for `name` (the first word of one of its indented lines). Prose
+    /// elsewhere that merely mentions the file doesn't count.
+    fn lists_file(readme: &str, name: &str) -> bool {
+        readme
+            .lines()
+            .skip_while(|l| l.trim() != "FILES IN THIS FOLDER")
+            .skip(2) // the title and its underline
+            .take_while(|l| !l.trim().is_empty())
+            .filter(|l| l.starts_with("  "))
+            .any(|l| l.split_whitespace().next() == Some(name))
+    }
+
+    #[test]
+    fn lists_file_takes_only_entries_of_the_files_section() {
+        let readme = "Keep out.obsr next to the exe.\n\nFILES IN THIS FOLDER\n--------------------\n  App.exe     the app\n  out.h264    a sample\n\nENV\n  out.avbn    elsewhere\n";
+        assert!(lists_file(readme, "out.h264"));
+        assert!(lists_file(readme, "App.exe"));
+        assert!(!lists_file(readme, "out.obsr"), "prose is not an entry");
+        assert!(!lists_file(readme, "out.avbn"), "another section");
+        assert!(!lists_file(readme, "out.h26"), "whole names only");
+        assert!(!lists_file("  out.h264  no section\n", "out.h264"));
+    }
+
+    #[test]
+    fn files_named_in_finds_file_names_only() {
+        assert_eq!(
+            stream::files_named_in("Try out.h264, out.avbn or out.obsr from the repo root."),
+            ["out.h264", "out.avbn", "out.obsr"]
+        );
+        assert_eq!(
+            stream::files_named_in(stream::OPEN_HINT),
+            ["out.h264", "out.obsr"]
+        );
+    }
+
     fn input(t: f64) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -3665,7 +4025,8 @@ mod tests {
             );
         }
         // and the same after saving and reopening
-        let path = project::test_dir("fresh-clean").join("fresh.seraphina");
+        let tmp = crate::test_dir::TestDir::new("fresh-clean");
+        let path = tmp.path().join("fresh.seraphina");
         app.save_project_to(&path).unwrap();
         app.open_project_from(&path).unwrap();
         for m in [Mode::Scene, Mode::Materials, Mode::Paint] {
@@ -3674,11 +4035,13 @@ mod tests {
             t += 1.0;
             assert!(!app.check_dirty(), "{:?} after reopening", m);
         }
+        crate::test_dir::fail_late();
     }
 
     #[test]
     fn a_damaged_learning_bank_is_announced_at_startup() {
-        let dir = project::test_dir("startup-corrupt");
+        let tmp = crate::test_dir::TestDir::new("startup-corrupt");
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("mercy_bank.json");
         std::fs::write(&path, b"\x00\x00garbage").unwrap();
         let ctx = egui::Context::default();
@@ -3689,6 +4052,7 @@ mod tests {
             .items
             .iter()
             .any(|t| matches!(t.kind, ToastKind::Warn) && t.text.contains("learning bank")));
+        crate::test_dir::fail_late();
     }
 
     fn app_with(ctx: &egui::Context, provider: Option<Arc<dyn llm::LlmProvider>>) -> App {
@@ -3696,18 +4060,41 @@ mod tests {
         let mut app = App::with(ctx, a, videogen::VideoGenPanel::unconfigured());
         app.app_settings.ai_consent = true; // tests that need the prompt clear it
                                             // never touch the user's saved output settings or stream key
-        let dir = std::env::temp_dir().join(format!("seraphina_app_rec_{}", std::process::id()));
+                                            // a recordings folder of this App's own, removed when it drops
+        let rec = test_dir::TestDir::new("app_rec");
         app.output = output::Output::new(
             output::OutputConfig {
-                record_dir: dir.to_string_lossy().into_owned(),
+                record_dir: rec.path().to_string_lossy().into_owned(),
                 width: 320,
                 height: 180,
                 ..Default::default()
             },
             String::new(),
         );
-        app.project.docs_dir = project::test_dir("docs");
+        app.test_dirs.push(rec);
+        let docs = crate::test_dir::TestDir::new("docs");
+        app.project.docs_dir = docs.path().to_path_buf();
+        app.test_dirs.push(docs);
         app
+    }
+
+    /// app_with's recordings folder goes when the App drops, also when
+    /// the test panics part-way, and each App has its own.
+    #[test]
+    fn app_with_removes_its_recordings_folder_even_when_the_test_panics() {
+        let ctx = egui::Context::default();
+        let mut rec = std::path::PathBuf::new();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let app = app_with(&ctx, None);
+            rec = std::path::PathBuf::from(&app.output.cfg.record_dir);
+            assert!(rec.is_dir(), "{} not made", rec.display());
+            std::fs::write(rec.join("take.mp4"), b"x").unwrap();
+            let other = app_with(&ctx, None);
+            assert_ne!(other.output.cfg.record_dir, app.output.cfg.record_dir);
+            panic!("test failed part-way");
+        }));
+        assert!(r.is_err());
+        assert!(!rec.exists(), "{} left behind", rec.display());
     }
 
     fn call(name: &str, args: &str) -> ToolCall {
@@ -3939,7 +4326,7 @@ mod tests {
 
     /// UI frame time with a heavy arena playing, before (M1: all-pairs
     /// contacts stepped inside the frame) and after (A8: sweep-and-prune on
-    /// the worker). `cargo test --release --features ui --bin ui -- --ignored
+    /// the worker). `cargo test --release --bin ui -- --ignored
     /// measure_ui_frame_time --nocapture` (SERAPHINA_BENCH_BODIES, default 1500).
     #[test]
     #[ignore = "benchmark: run with --release and --nocapture"]
@@ -4073,8 +4460,8 @@ mod tests {
             }
             !c
         }
-        let dir = std::env::temp_dir().join(format!("seraphina-mp-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = crate::test_dir::TestDir::new("mp");
+        let dir = tmp.path();
         // a PNG header claiming 20000×20000 (400 MP) and no pixel data
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         let mut ihdr = b"IHDR".to_vec();
@@ -4133,7 +4520,7 @@ mod tests {
             crate::paint::check_open_size(16384, 8192).is_err()
                 == (16384u64 * 8192 > crate::paint::max_megapixels() * 1_000_000)
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -4663,7 +5050,8 @@ mod tests {
         assert!(
             app.dispatch(
                 &AppCommand::SetOutputSource {
-                    source: "screen".into()
+                    source: "screen".into(),
+                    device: None,
                 },
                 Origin::User
             )
@@ -4677,6 +5065,42 @@ mod tests {
         let path = app.output.last_record.clone().unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() > 1000);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn set_output_source_selects_a_camera_by_name() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, None);
+        let src = |source: &str, device: Option<&str>| AppCommand::SetOutputSource {
+            source: source.into(),
+            device: device.map(Into::into),
+        };
+        let msg = app.dispatch(&src("camera", None), Origin::User).unwrap();
+        assert_eq!(msg, "output source: Camera (first camera found)");
+        let msg = app
+            .dispatch(&src("webcam", Some(" C920 ")), Origin::User)
+            .unwrap();
+        assert_eq!(msg, "output source: Camera (C920)");
+        assert_eq!(app.output.cfg.source, output::Source::Camera);
+        assert_eq!(app.output.cfg.camera_device, "C920");
+        // switching away keeps the chosen camera for next time
+        app.dispatch(&src("canvas", None), Origin::User).unwrap();
+        assert_eq!(app.output.cfg.camera_device, "C920");
+        assert!(app
+            .dispatch(&src("screen", Some("C920")), Origin::User)
+            .unwrap_err()
+            .contains("only the camera source takes a device"));
+        assert!(app
+            .dispatch(&src("radio", None), Origin::User)
+            .unwrap_err()
+            .contains("(canvas, screen, camera)"));
+        // the AI tool spec offers the camera and its device
+        let spec = commands::tool_specs()
+            .into_iter()
+            .find(|t| t.name == "set_output_source")
+            .unwrap();
+        let p = spec.params.to_string();
+        assert!(p.contains("\"camera\"") && p.contains("\"device\""), "{p}");
     }
 
     #[test]
@@ -4758,9 +5182,8 @@ mod tests {
     #[ignore = "needs the seraphina CLI on PATH (pip install seraphina-agi)"]
     fn chat_routes_memory_intents_to_the_real_cli() {
         let mut cli = llm::SeraphinaCli::detect().expect("seraphina CLI not found on PATH");
-        let home = std::env::temp_dir().join(format!("seraphina_chat_cli_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        cli.home = Some(home.clone());
+        let home = crate::test_dir::TestDir::new("chat_cli");
+        cli.home = Some(home.path().to_path_buf());
         let ctx = egui::Context::default();
         let mut app = app_with(&ctx, None);
         app.assistant.set_cli(Some(cli));
@@ -4785,7 +5208,7 @@ mod tests {
         assert!(say(&mut app, "triad tidy the layer stack").contains("consensus"));
         assert!(say(&mut app, "version").contains("seraphina"));
         assert!(say(&mut app, "help").contains("recall [query]"));
-        let _ = std::fs::remove_dir_all(&home);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -4887,9 +5310,8 @@ mod tests {
     fn psd_save_roundtrips_through_open() {
         let ctx = egui::Context::default();
         let mut app = app_with(&ctx, None);
-        let dir = std::env::temp_dir().join(format!("seraphina_psd_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("rt.psd");
+        let tmp = crate::test_dir::TestDir::new("psd");
+        let path = tmp.path().join("rt.psd");
         let before = app.paint.flattened();
         app.paint.to_psd().save(&path).unwrap();
         app.dispatch(
@@ -4908,7 +5330,7 @@ mod tests {
             .sum::<f64>()
             / before.data.len() as f64;
         assert!(diff < 1.5, "mean diff {}", diff);
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 
     #[test]
@@ -5503,6 +5925,139 @@ mod tests {
         assert_eq!(app.meter.session.calls, 0);
     }
 
+    /// A load warning doesn't swallow a later save failure: a damaged
+    /// history (kept aside) and then a save that fails (a non-empty folder
+    /// where usage.json goes, so the rename fails for any user) give two
+    /// toasts in the same frame and two log reports. A good save ends the
+    /// run of failures, so the next failure warns again.
+    #[test]
+    fn a_save_failure_after_a_load_warning_is_warned_about_too() {
+        let ctx = egui::Context::default();
+        let tmp = test_dir::TestDir::new("usage_load_then_save");
+        let studio = tmp.path().join("studio");
+        std::fs::create_dir_all(&studio).unwrap();
+        let path = studio.join("usage.json");
+        std::fs::write(&path, b"{\"entries\":[").unwrap();
+        let logs = tmp.path().join("logs");
+        let mut app = app_with(&ctx, None);
+        app.meter = usage::Meter::load_from(path.clone(), logs.clone(), 0.50);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("blocker"), b"x").unwrap();
+        let warns = |app: &App| -> Vec<String> {
+            app.toasts
+                .items
+                .iter()
+                .filter(|t| matches!(t.kind, ToastKind::Warn))
+                .map(|t| t.text.clone())
+                .collect()
+        };
+        app.assistant.spent.push(dollars(0.30));
+        app.pump_usage();
+        let w = warns(&app);
+        assert_eq!(w.len(), 2, "load and save are both warned about: {w:?}");
+        assert!(w[0].contains("is damaged ("), "{w:?}");
+        assert!(
+            w[1].starts_with(&format!(
+                "Couldn't save the xAI spending history to {}",
+                path.display()
+            )),
+            "{w:?}"
+        );
+        let logged = |logs: &std::path::Path| -> Vec<String> {
+            std::fs::read_dir(logs)
+                .expect("the logs folder was made")
+                .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+                .collect()
+        };
+        let l = logged(&logs);
+        assert_eq!(l.len(), 2, "two log reports: {l:?}");
+        for msg in &w {
+            assert!(
+                l.iter().any(|b| b.contains(msg.as_str())),
+                "{msg} not logged"
+            );
+        }
+        app.assistant.spent.push(dollars(0.10));
+        app.pump_usage();
+        assert_eq!(warns(&app).len(), 2, "the same run of failures: no repeat");
+        assert!(app.meter.check(0.15).is_err(), "the cap still holds");
+
+        std::fs::remove_dir_all(&path).unwrap();
+        app.assistant.spent.push(dollars(0.01));
+        app.pump_usage();
+        assert!(path.is_file(), "saving works again");
+        assert_eq!(warns(&app).len(), 2);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("blocker"), b"x").unwrap();
+        app.assistant.spent.push(dollars(0.01));
+        app.pump_usage();
+        let w = warns(&app);
+        assert_eq!(w.len(), 3, "a new run of failures warns again: {w:?}");
+        assert!(w[2].starts_with("Couldn't save"), "{w:?}");
+        assert_eq!(logged(&logs).len(), 3);
+    }
+
+    /// A spending history that can't be saved warns once (toast and a log
+    /// report) and the cap still holds for this session. A file sits where
+    /// the studio folder should be, so the save genuinely fails (for root
+    /// too, unlike a read-only folder).
+    #[test]
+    fn an_unsaveable_spending_history_warns_and_the_cap_still_holds() {
+        let ctx = egui::Context::default();
+        let tmp = test_dir::TestDir::new("usage_unsaveable");
+        let studio = tmp.path().join("studio");
+        std::fs::write(&studio, b"not a folder").unwrap();
+        let logs = tmp.path().join("logs");
+        let mut app = app_with(&ctx, None);
+        app.meter = usage::Meter::load_from(studio.join("usage.json"), logs.clone(), 0.50);
+        for _ in 0..2 {
+            app.assistant.spent.push(dollars(0.30));
+            app.pump_usage();
+        }
+        let warns: Vec<&str> = app
+            .toasts
+            .items
+            .iter()
+            .filter(|t| matches!(t.kind, ToastKind::Warn))
+            .map(|t| t.text.as_str())
+            .collect();
+        assert_eq!(warns.len(), 1, "one warning, not one per call: {warns:?}");
+        assert!(
+            warns[0].starts_with(&format!(
+                "Couldn't save the xAI spending history to {}",
+                studio.join("usage.json").display()
+            )),
+            "{warns:?}"
+        );
+        assert!(warns[0].contains("after a restart the last 24 h will start from zero"));
+        let logged: Vec<_> = std::fs::read_dir(&logs)
+            .expect("the logs folder was made")
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(logged.len(), 1, "one log report: {logged:?}");
+        let name = logged[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            name.starts_with("usage-") && name.ends_with(".txt"),
+            "{name}"
+        );
+        let body = std::fs::read_to_string(&logged[0]).unwrap();
+        assert!(
+            body.contains("Couldn't save the xAI spending history"),
+            "{body}"
+        );
+        // the cap counts both calls in memory
+        let e = app.meter.check(0.0).unwrap_err();
+        assert!(e.starts_with("Spend cap reached ($0.60 of $0.50"), "{e}");
+        assert!(app.cap_allows(0.01, true).is_err());
+        assert!(studio.is_file(), "the file in the way is left alone");
+        test_dir::fail_late();
+    }
+
     #[test]
     fn spend_cap_blocks_chat_and_imagine_with_a_toast() {
         let ctx = egui::Context::default();
@@ -5584,7 +6139,7 @@ mod tests {
     }
 
     /// Live, billed: real xAI tool calling through the bus. Run with
-    /// `cargo test --features ui --bin ui -- --ignored live_xai_tool_calling_smoke`.
+    /// `cargo test --bin ui -- --ignored live_xai_tool_calling_smoke`.
     #[test]
     #[ignore = "live, billed: needs XAI_API_KEY or SERAPHINA_GROK_API_KEY"]
     fn live_xai_tool_calling_smoke() {

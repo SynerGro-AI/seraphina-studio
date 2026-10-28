@@ -5,7 +5,14 @@
 //! stream, a job whose final status we never saw, a provider that does
 //! not report it) we estimate from the public price list and mark the
 //! entry as estimated. The cap counts the last 24 hours across sessions,
-//! kept in `~/.seraphina/studio/usage.json`.
+//! kept in `~/.seraphina/studio/usage.json`. If that file can't be
+//! saved, the app warns once (toast and a `usage-*.txt` log report) and the
+//! cap keeps counting this session in memory. Only a missing file starts
+//! the history fresh quietly: one that is damaged or can't be read is moved
+//! aside to `usage.json.bad` (`.bad-2`, ... if taken; never overwritten)
+//! with the same warning. If it can't be moved aside either, it is left
+//! where it is and nothing is saved over it that run: the warning says so
+//! and the cap counts that session in memory only.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -223,6 +230,13 @@ pub struct Meter {
     pub project: Totals,
     ledger: Ledger,
     path: Option<PathBuf>,
+    /// Where a failed save is logged (a `usage-*.txt` report).
+    log_dir: Option<PathBuf>,
+    /// Saving has failed since the last good save (it was warned about
+    /// once). A load problem has its own warning and doesn't set this.
+    save_failing: bool,
+    /// Load and save problems not yet shown to the user, oldest first.
+    warnings: Vec<String>,
     /// USD per 24 h; 0 turns the cap off.
     pub cap_usd: f64,
 }
@@ -232,16 +246,78 @@ impl Meter {
         crate::output::studio_dir().join("usage.json")
     }
 
-    /// Load the 24 h ledger from disk (a damaged file starts fresh).
+    /// Load the 24 h ledger from disk. A missing file starts fresh; a
+    /// damaged or unreadable one is moved aside and warned about.
     pub fn load(cap_usd: f64) -> Self {
-        let path = Self::path();
-        let ledger = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let mut m = Self::with(Some(path), ledger, cap_usd);
+        Self::load_from(Self::path(), crate::crash::logs_dir(), cap_usd)
+    }
+
+    /// `load` with the ledger file and the log folder given.
+    pub fn load_from(path: PathBuf, log_dir: PathBuf, cap_usd: f64) -> Self {
+        let mut m = Self::with(Some(path.clone()), Ledger::default(), cap_usd);
+        m.log_dir = Some(log_dir);
+        let why = match std::fs::read(&path) {
+            Ok(b) => match serde_json::from_slice(&b) {
+                Ok(l) => {
+                    m.ledger = l;
+                    None
+                }
+                Err(e) => Some(format!(
+                    "The xAI spending history {} is damaged ({e})",
+                    path.display()
+                )),
+            },
+            // no file there: nothing to lose (a file where a parent folder
+            // should be gives NotADirectory on Linux, NotFound on Windows;
+            // saving then fails and warns)
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                None
+            }
+            Err(e) => Some(format!(
+                "Couldn't read the xAI spending history {} ({e})",
+                path.display()
+            )),
+        };
+        if let Some(why) = why {
+            m.load_failed(&path, &why);
+        }
         m.prune(now_secs());
         m
+    }
+
+    /// The history on disk can't be used: keep it as `usage.json.bad` (or
+    /// `.bad-2`, ...) so the next save can't destroy it, and warn once. If
+    /// it can't be moved, this run saves nothing over it.
+    fn load_failed(&mut self, path: &std::path::Path, why: &str) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "usage.json".into());
+        let mut bad = path.with_file_name(format!("{name}.bad"));
+        let mut n = 1;
+        while bad.symlink_metadata().is_ok() {
+            n += 1;
+            bad = path.with_file_name(format!("{name}.bad-{n}"));
+        }
+        let kept = match std::fs::rename(path, &bad) {
+            Ok(()) => format!("It was kept as {}", bad.display()),
+            Err(e) => {
+                self.path = None;
+                format!(
+                    "It couldn't be moved aside to {} ({e}), so it was left as it is and nothing will be saved over it until the app is restarted; this session's spending is counted in memory only",
+                    bad.display()
+                )
+            }
+        };
+        let msg = format!(
+            "{why}. {kept}. The spend cap counts the last 24 h from zero now, so earlier spending isn't included."
+        );
+        self.report(msg);
     }
 
     /// In-memory only (tests).
@@ -255,6 +331,9 @@ impl Meter {
             project: Totals::default(),
             ledger,
             path,
+            log_dir: None,
+            save_failing: false,
+            warnings: Vec::new(),
             cap_usd,
         }
     }
@@ -276,17 +355,47 @@ impl Meter {
         if u.ticks > 0 {
             self.ledger.entries.push((now, u.ticks));
         }
-        if let Some(p) = &self.path {
-            if let Some(d) = p.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            if let Ok(b) = serde_json::to_vec(&self.ledger) {
-                let tmp = p.with_extension("json.tmp");
-                if std::fs::write(&tmp, b).is_ok() {
-                    let _ = std::fs::rename(&tmp, p);
-                }
+        if let Some(p) = self.path.clone() {
+            let saved = serde_json::to_vec(&self.ledger)
+                .map_err(|e| e.to_string())
+                .and_then(|b| crate::project::write_atomic(&p, &b).map_err(|e| e.to_string()));
+            match saved {
+                Ok(()) => self.save_failing = false,
+                Err(e) => self.save_failed(&p, &e),
             }
         }
+    }
+
+    /// Warn once per run of save failures: a toast (via `take_warning`),
+    /// stderr and a log report. A good save ends the run. Independent of a
+    /// load warning earlier in the same session.
+    fn save_failed(&mut self, path: &std::path::Path, e: &str) {
+        if !self.save_failing {
+            self.report(format!(
+                "Couldn't save the xAI spending history to {}: {}. The spend cap still counts this session, but after a restart the last 24 h will start from zero.",
+                path.display(),
+                e
+            ));
+        }
+        self.save_failing = true;
+    }
+
+    /// Tell the user about a problem: stderr, a `usage-*.txt` log report
+    /// and a warning (via `take_warning`).
+    fn report(&mut self, msg: String) {
+        eprintln!("warning: {msg}");
+        if let Some(dir) = &self.log_dir {
+            if let Err(le) = crate::crash::write_report_in(dir, "usage", &msg, "") {
+                eprintln!("warning: couldn't write a log in {}: {le}", dir.display());
+            }
+        }
+        self.warnings.push(msg);
+    }
+
+    /// The oldest load or save problem not yet shown to the user; each is
+    /// returned once.
+    pub fn take_warning(&mut self) -> Option<String> {
+        (!self.warnings.is_empty()).then(|| self.warnings.remove(0))
     }
 
     pub fn last_24h_usd(&self) -> f64 {
@@ -361,6 +470,189 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The `usage-*.txt` reports in `logs`.
+    fn usage_logs(logs: &std::path::Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(logs)
+            .expect("the logs folder was made")
+            .map(|e| e.unwrap())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("usage-"))
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn spend(usd: f64) -> Usage {
+        Usage {
+            ticks: ticks(usd),
+            ..Default::default()
+        }
+    }
+
+    /// A damaged history isn't reset silently: it is kept as
+    /// `usage.json.bad` (a second one as `.bad-2`, never overwriting), the
+    /// warning says so once and goes in a log report, and the next save
+    /// writes a fresh file. A missing file starts fresh with no warning.
+    #[test]
+    fn a_damaged_spending_history_is_kept_aside_and_warned_about() {
+        let dir = crate::test_dir::TestDir::new("usage_damaged");
+        let (studio, logs) = (dir.path().join("studio"), dir.path().join("logs"));
+        std::fs::create_dir_all(&studio).unwrap();
+        let path = studio.join("usage.json");
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        assert_eq!(m.take_warning(), None, "a missing file is just new");
+        assert!(!logs.exists(), "nothing logged");
+        m.record(&spend(0.25));
+        drop(m);
+        let good = std::fs::read(&path).unwrap();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        assert_eq!(m.take_warning(), None);
+        assert!((m.last_24h_usd() - 0.25).abs() < 1e-9, "a good file loads");
+        drop(m);
+
+        let damaged = &good[..good.len() - 3];
+        std::fs::write(&path, damaged).unwrap();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let bad = studio.join("usage.json.bad");
+        let w = m.take_warning().expect("a damaged history is warned about");
+        assert!(
+            w.starts_with(&format!(
+                "The xAI spending history {} is damaged (",
+                path.display()
+            )),
+            "{w}"
+        );
+        assert!(
+            w.contains(&format!("It was kept as {}.", bad.display())),
+            "{w}"
+        );
+        assert!(w.contains("counts the last 24 h from zero"), "{w}");
+        assert_eq!(m.take_warning(), None, "once");
+        assert_eq!(std::fs::read(&bad).unwrap(), damaged, "kept byte for byte");
+        assert!(!path.exists());
+        let reports = usage_logs(&logs);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(reports[0].contains(&w), "{reports:?}");
+        m.record(&spend(0.10));
+        assert!(!m.save_failing);
+        assert!(serde_json::from_slice::<Ledger>(&std::fs::read(&path).unwrap()).is_ok());
+        assert_eq!(
+            std::fs::read(&bad).unwrap(),
+            damaged,
+            "the save left it alone"
+        );
+        drop(m);
+
+        std::fs::write(&path, b"{").unwrap();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let w = m.take_warning().expect("warned again on the next start");
+        assert!(
+            w.contains(&format!(
+                "It was kept as {}.",
+                studio.join("usage.json.bad-2").display()
+            )),
+            "{w}"
+        );
+        assert_eq!(
+            std::fs::read(&bad).unwrap(),
+            damaged,
+            "the first one is not overwritten"
+        );
+        assert_eq!(
+            std::fs::read(studio.join("usage.json.bad-2")).unwrap(),
+            b"{"
+        );
+        // same second, same pid: the report file name repeats, so look for
+        // the new message rather than counting files
+        assert!(usage_logs(&logs).iter().any(|r| r.contains(&w)));
+    }
+
+    /// A damaged history that can't be moved aside either (here the
+    /// `.bad` name is too long for the file system, a real rename failure
+    /// for any user) is never saved over: that run saves nothing, says so
+    /// once in the warning and the log, and still counts in memory.
+    #[test]
+    fn a_history_that_cant_be_moved_aside_is_never_saved_over() {
+        let dir = crate::test_dir::TestDir::new("usage_unmovable");
+        let (studio, logs) = (dir.path().join("studio"), dir.path().join("logs"));
+        std::fs::create_dir_all(&studio).unwrap();
+        // 252 bytes is a legal name; with ".bad" it is 256, over the
+        // 255-byte limit of ext4, NTFS and the rest
+        let path = studio.join(format!("{}.json", "u".repeat(247)));
+        let damaged = br#"{"entries":[[1,2"#;
+        std::fs::write(&path, damaged).unwrap();
+        let bad = studio.join(format!("{}.json.bad", "u".repeat(247)));
+        let rename = std::fs::rename(&path, &bad).unwrap_err();
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let w = m.take_warning().expect("warned");
+        assert!(w.contains("is damaged ("), "{w}");
+        assert!(
+            w.contains(&format!(
+                "It couldn't be moved aside to {} ({rename})",
+                bad.display()
+            )),
+            "{w}"
+        );
+        assert!(w.contains("nothing will be saved over it"), "{w}");
+        assert!(w.contains("counted in memory only"), "{w}");
+        let reports = usage_logs(&logs);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(reports[0].contains(&w), "{reports:?}");
+        m.record(&spend(0.25));
+        m.record(&spend(0.25));
+        assert!((m.last_24h_usd() - 0.5).abs() < 1e-9, "counted in memory");
+        assert!(m.check(0.6).is_err(), "the cap still holds this session");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            damaged,
+            "the original history is untouched"
+        );
+        assert!(!bad.exists());
+        assert_eq!(m.take_warning(), None, "said once");
+        assert_eq!(usage_logs(&logs).len(), 1);
+    }
+
+    /// A history that can't be read (here a folder named `usage.json`,
+    /// which no user can read as a file, root included) isn't reset
+    /// silently either: it's moved aside with its contents, warned about
+    /// once and logged, and saving works again afterwards.
+    #[test]
+    fn an_unreadable_spending_history_is_kept_aside_and_warned_about() {
+        let dir = crate::test_dir::TestDir::new("usage_unreadable");
+        let (studio, logs) = (dir.path().join("studio"), dir.path().join("logs"));
+        let path = studio.join("usage.json");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("inside"), b"kept").unwrap();
+        let read = std::fs::read(&path).unwrap_err();
+        assert_ne!(read.kind(), std::io::ErrorKind::NotFound);
+        let mut m = Meter::load_from(path.clone(), logs.clone(), 1.0);
+        let bad = studio.join("usage.json.bad");
+        let w = m
+            .take_warning()
+            .expect("an unreadable history is warned about");
+        assert!(
+            w.starts_with(&format!(
+                "Couldn't read the xAI spending history {} (",
+                path.display()
+            )),
+            "{w}"
+        );
+        assert!(w.contains(&read.to_string()), "{w}");
+        assert!(
+            w.contains(&format!("It was kept as {}.", bad.display())),
+            "{w}"
+        );
+        assert_eq!(m.take_warning(), None, "once");
+        assert_eq!(std::fs::read(bad.join("inside")).unwrap(), b"kept");
+        let reports = usage_logs(&logs);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(reports[0].contains(&w), "{reports:?}");
+        m.record(&spend(0.10));
+        assert!(!m.save_failing);
+        assert!(path.is_file());
+        assert_eq!(m.take_warning(), None);
+    }
+
     #[test]
     fn parses_xai_usage_and_prefers_its_cost() {
         let v = json!({"usage":{"prompt_tokens":1200,"completion_tokens":300,"cost_in_usd_ticks":42_000_000u64}});
@@ -414,9 +706,8 @@ mod tests {
 
     #[test]
     fn ledger_survives_a_restart() {
-        let dir = std::env::temp_dir().join(format!("seraphina-usage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("usage.json");
+        let tmp = crate::test_dir::TestDir::new("usage");
+        let path = tmp.path().join("usage.json");
         let mut m = Meter::with(Some(path.clone()), Ledger::default(), 1.0);
         m.record(&Usage {
             ticks: ticks(1.5),
@@ -427,6 +718,6 @@ mod tests {
         assert!((again.last_24h_usd() - 1.5).abs() < 1e-9);
         assert!(again.check(0.0).is_err());
         assert_eq!(again.session, Totals::default(), "session starts at zero");
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::test_dir::fail_late();
     }
 }

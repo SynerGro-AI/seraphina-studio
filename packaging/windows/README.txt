@@ -1,9 +1,26 @@
 Seraphina Studio (Windows x64)
 
-Double-click SeraphinaStudio.exe. Keep the assets folder and out.* files next to it.
+Double-click SeraphinaStudio.exe. Keep the assets folder, out.obsr and out.h264
+next to it: Paint and Composite open the sample images in assets, Stream mode
+opens out.obsr at startup, and out.h264 is the default file in its Open box.
 You can also open a file directly:  SeraphinaStudio.exe path\to\image.psd
-Built with the x86_64-pc-windows-gnu toolchain. Tested under Wine 10 on Linux
-(a proxy, not real Windows) and built + unit-tested by CI on windows-latest.
+Built with the x86_64-pc-windows-msvc toolchain, with the C runtime linked
+in (static CRT) so that no Visual C++ Redistributable should be needed.
+NOT VERIFIED: no MSVC build of this version has been run and checked yet.
+Until one has, if Windows says VCRUNTIME140.dll is missing, install the
+Visual C++ Redistributable. The code is tested under Wine 10 on Linux (a
+proxy, not real Windows).
+
+FILES IN THIS FOLDER
+--------------------
+  SeraphinaStudio.exe   the app
+  README.txt            this file
+  LICENSE               the GNU GPL, version 2 (the app's licence)
+  SOURCE.txt            where to get this build's source, and how to build it
+  assets\               sample images Paint and Composite open
+  scripts\              sample Seraphina scripts (.jsonl)
+  out.obsr              the recording Stream mode opens at startup
+  out.h264              the default file in Stream mode's Open box
 
 RECORDING AND STREAMING NEED FFMPEG (not bundled)
 -------------------------------------------------
@@ -55,7 +72,16 @@ Cost: xAI bills your key per chat message, per image and per second of
 video. The status bar (bottom right) shows what this session spent; Settings > xAI
 spending shows the session, this project and the last 24 hours, and lets
 you set a spend cap (USD per 24 h, 0 = off). Once the cap is reached
-nothing more is sent to xAI and a message says so. Costs use xAI's own
+nothing more is sent to xAI and a message says so. If the 24 h history
+can't be saved, a warning says so (once) and a usage-*.txt report goes in
+the logs folder; the cap still counts this session, but after a restart
+the last 24 h start from zero. If the saved history is damaged or can't
+be read at start, it is kept as usage.json.bad next to it (usage.json.bad-2
+and so on if that name is taken; never overwritten) with the same warning
+and report, and the last 24 h start from zero. If it can't be moved aside
+either, it is left as it is and nothing is saved over it until the next
+start; the warning says so and the cap counts that session in memory.
+Only a missing file starts fresh quietly. Costs use xAI's own
 figures when it reports them, otherwise estimates from the public price
 list (video is always estimated). Stop (shown while Seraphina or Grok
 Imagine is working) ends the wait at once, but a request xAI had already

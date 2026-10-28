@@ -2174,10 +2174,12 @@ dependencies = [
  "egui-phosphor",
  "epaint_default_fonts",
  "image",
+ "libc",
  "rfd",
  "serde",
  "serde_json",
  "ureq",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
  "zip",
 ]

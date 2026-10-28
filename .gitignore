@@ -3,3 +3,4 @@ slice.obsr
 *.txt
 !reports/
 !packaging/windows/README.txt
+!packaging/windows/zip-files.txt

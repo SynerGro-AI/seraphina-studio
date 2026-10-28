@@ -6,6 +6,7 @@ pub mod circuit;
 pub mod computer;
 pub mod element_data;
 pub mod element_props;
+pub mod encoder_packet;
 pub mod joint;
 pub mod joint_hierarchy;
 pub mod live_weights;
@@ -15,6 +16,7 @@ pub mod material_env;
 pub mod material_pbr;
 pub mod material_registry;
 pub mod materials_lab;
+pub mod output_delay_queue;
 pub mod periodic_table;
 pub mod psd;
 #[cfg(test)]

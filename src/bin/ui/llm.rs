@@ -783,9 +783,8 @@ mod tests {
     #[ignore = "needs the seraphina CLI on PATH (pip install seraphina-agi)"]
     fn real_cli_intents_end_to_end() {
         let mut cli = SeraphinaCli::detect().expect("seraphina CLI not found on PATH");
-        let home = std::env::temp_dir().join(format!("seraphina_cli_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        cli.home = Some(home.clone());
+        let home = crate::test_dir::TestDir::new("cli_test");
+        cli.home = Some(home.path().to_path_buf());
         assert!(cli.version.starts_with("seraphina "), "{}", cli.version);
         assert!(cli
             .intent("version")
@@ -806,7 +805,7 @@ mod tests {
         let t = cli.intent("triad keep the layers tidy").unwrap();
         assert!(t.contains("consensus:") && t.contains("response:"), "{}", t);
         assert!(cli.intent("build glyph 179").is_err());
-        let _ = std::fs::remove_dir_all(&home);
+        crate::test_dir::fail_late();
     }
 
     /// `plan-grok` through the real CLI is a billed xAI call, so it is its
@@ -821,14 +820,12 @@ mod tests {
             "real_cli_plan_grok needs XAI_API_KEY or SERAPHINA_GROK_API_KEY"
         );
         let mut cli = SeraphinaCli::detect().expect("seraphina CLI not found on PATH");
-        let home = std::env::temp_dir().join(format!("seraphina_plan_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        cli.home = Some(home.clone());
+        let home = crate::test_dir::TestDir::new("plan_test");
+        cli.home = Some(home.path().to_path_buf());
         let p = cli
             .intent("plan-grok three steps to add a gold vignette")
             .expect("plan-grok");
         assert!(p.contains("grok plan"), "{}", p);
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Live, billed: run with `-- --ignored live_xai_smoke`; needs a key.
