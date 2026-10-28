@@ -20,6 +20,10 @@ on:
     types: [opened, synchronize, reopened]
 permissions:
   contents: read
+# A new push to the PR cancels the review of the previous commit.
+concurrency:
+  group: grok-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   review:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot'

@@ -44,6 +44,10 @@ impl MaterialAssign {
         self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -72,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut a = MaterialAssign::new();
         a.assign("wing", "paint").unwrap();
         a.assign("tail", "metal").unwrap();

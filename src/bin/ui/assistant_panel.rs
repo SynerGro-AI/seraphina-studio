@@ -2,7 +2,7 @@
 //!
 //! Backends, in order: the Seraphina.AGI CLI for its native intents
 //! (remember / recall / triad), an `LlmProvider` (xAI by default) with the
-//! full `AppCommand` tool set, and the labelled offline stub. Tool calls
+//! full `AppCommand` tool set, and the labelled offline help mode. Tool calls
 //! come back to `App`, which runs them through the Triad gate and the
 //! command bus and reports the results here as an action log.
 
@@ -126,7 +126,7 @@ impl AssistantPanel {
     pub fn with_provider(provider: Option<Arc<dyn LlmProvider>>, prefs: Prefs) -> Self {
         let hello = match &provider {
             Some(p) => format!("Hi, I'm Seraphina. I'm connected to {} and can operate every mode for you: ask for an edit, and you can undo anything I do with one click.", p.name()),
-            None => "Hi, I'm Seraphina. No language model is configured yet (add an xAI API key in Settings, set XAI_API_KEY, or SERAPHINA_BASE_URL for another OpenAI-compatible server), so I'm running as the offline stub: built-in tips only, no actions.".to_string(),
+            None => "Hi, I'm Seraphina. No language model is configured yet (add an xAI API key in Settings, set XAI_API_KEY, or SERAPHINA_BASE_URL for another OpenAI-compatible server), so I'm running in offline help mode: built-in tips only, no actions.".to_string(),
         };
         let (spent_tx, spent_rx) = std::sync::mpsc::channel();
         Self {
@@ -177,7 +177,7 @@ impl AssistantPanel {
     pub fn backend_label(&self) -> String {
         match &self.provider {
             Some(p) => p.name(),
-            None => "Offline stub".into(),
+            None => "Offline help".into(),
         }
     }
 
@@ -336,7 +336,7 @@ impl AssistantPanel {
                     .unwrap_or_else(|e| format!("{:?}", e));
                 self.items.push(ChatItem {
                     kind: ItemKind::Assistant {
-                        source: "Offline stub".into(),
+                        source: "Offline help".into(),
                     },
                     text: reply,
                     rated: None,
@@ -573,7 +573,7 @@ impl AssistantPanel {
                 let (c, t) = if self.provider.is_some() {
                     (p.success, "LLM")
                 } else {
-                    (p.warn, "Offline stub")
+                    (p.warn, "Offline help")
                 };
                 theme::pill(ui, p, c, t).on_hover_text(self.backend_label());
             });

@@ -15,6 +15,7 @@
 //!   longest-lived isotope and its half-life, NUBASE via mendeleev).
 //! * Appearance text: Bowserinator Periodic-Table-JSON (CC BY-SA 3.0, text
 //!   from Wikipedia), https://github.com/Bowserinator/Periodic-Table-JSON .
+//!
 //! `None` / empty means the source has no value; the UI shows "unknown".
 //! Nothing is invented or interpolated.
 //!

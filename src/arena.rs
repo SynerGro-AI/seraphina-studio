@@ -218,20 +218,17 @@ pub struct Body {
 }
 
 impl Body {
-    /// A body from a material and a box; `volume` from the mesh (or the box when `None`).
+    /// A body from a material and a box; the volume is the box's (see [`Body::with_volume`]).
     pub fn new(
         name: &str,
         material: &str,
         env: EnvMeta,
         half: [f32; 3],
         pos: [f32; 3],
-        volume: Option<f32>,
         temp: f32,
         pressure: f64,
     ) -> Self {
-        let v = volume
-            .unwrap_or(8.0 * half[0] * half[1] * half[2])
-            .max(1e-9);
+        let v = (8.0 * half[0] * half[1] * half[2]).max(1e-9);
         let phase = env.phase_at(temp, pressure);
         let rho = env.density_in(phase, temp, pressure).unwrap_or(1000.0);
         Self {
@@ -252,6 +249,14 @@ impl Body {
             drag_cd: 1.05, // cube face-on
             vaporised: false,
         }
+    }
+
+    /// Use the mesh's volume instead of the box's, keeping the density.
+    pub fn with_volume(mut self, volume: f32) -> Self {
+        let v = volume.max(1e-9);
+        self.mass = self.mass / self.volume * v;
+        self.volume = v;
+        self
     }
 
     pub fn area_frontal(&self, dir: [f32; 3]) -> f32 {
@@ -829,9 +834,9 @@ fn resolve_pair(a: &mut Body, b: &mut Body, g: f32) -> bool {
     }
     // positional correction split by inverse mass
     let pen = ov[ax];
-    for k in 0..3 {
-        a.pos[k] -= nrm[k] * pen * ia / it;
-        b.pos[k] += nrm[k] * pen * ib / it;
+    for (k, n) in nrm.iter().enumerate() {
+        a.pos[k] -= n * pen * ia / it;
+        b.pos[k] += n * pen * ib / it;
     }
     let rv = [
         b.vel[0] - a.vel[0],
@@ -848,9 +853,9 @@ fn resolve_pair(a: &mut Body, b: &mut Body, g: f32) -> bool {
         };
         let e = if -vn < 2.0 * g * DT + 1e-3 { 0.0 } else { e };
         let jn = -(1.0 + e) * vn / it;
-        for k in 0..3 {
-            a.vel[k] -= jn * nrm[k] * ia;
-            b.vel[k] += jn * nrm[k] * ib;
+        for (k, n) in nrm.iter().enumerate() {
+            a.vel[k] -= jn * n * ia;
+            b.vel[k] += jn * n * ib;
         }
         // friction on the tangential relative velocity
         let rv = [
@@ -868,9 +873,9 @@ fn resolve_pair(a: &mut Body, b: &mut Body, g: f32) -> bool {
         if st > 1e-9 {
             let mu = (a.env.friction_kinetic * b.env.friction_kinetic).sqrt();
             let jt = (st / it).min(mu * jn);
-            for k in 0..3 {
-                a.vel[k] += jt * vt[k] / st * ia;
-                b.vel[k] -= jt * vt[k] / st * ib;
+            for (k, v) in vt.iter().enumerate() {
+                a.vel[k] += jt * v / st * ia;
+                b.vel[k] -= jt * v / st * ib;
             }
         }
     }
@@ -1017,7 +1022,6 @@ pub fn stress_pile(env: Environment, n: usize, seed: u64) -> Arena {
             metas[m].clone(),
             half,
             pos,
-            None,
             a.env.temperature + 40.0 * rnd(),
             a.env.pressure,
         );
@@ -1103,10 +1107,31 @@ mod tests {
             env_of(mat),
             [0.5, 0.5, 0.5],
             [0.0, y, 0.0],
-            None,
             env.temperature,
             env.pressure,
         )
+    }
+
+    #[test]
+    fn with_volume_keeps_density() {
+        let e = Environment::earth();
+        let a = Body::new(
+            "a",
+            "aluminum",
+            env_of("aluminum"),
+            [0.05; 3],
+            [0.0; 3],
+            293.0,
+            e.pressure,
+        );
+        let s = a.clone().with_volume(0.0005);
+        assert!((s.volume - 0.0005).abs() < 1e-9);
+        assert!((s.mass / s.volume - a.mass / a.volume).abs() < 1e-3);
+        assert!(
+            (s.mass - 1.35).abs() < 0.01,
+            "half a 10 cm Al cube: {}",
+            s.mass
+        );
     }
 
     #[test]
@@ -1120,7 +1145,6 @@ mod tests {
             env_of("aluminum"),
             [0.05, 0.05, 0.05],
             [0.0; 3],
-            None,
             293.0,
             e.pressure,
         );
@@ -1136,7 +1160,6 @@ mod tests {
             env_of("water"),
             [0.5; 3],
             [0.0; 3],
-            None,
             293.0,
             e.pressure,
         );
@@ -1146,7 +1169,6 @@ mod tests {
             env_of("water"),
             [0.5; 3],
             [0.0; 3],
-            None,
             263.0,
             e.pressure,
         );
@@ -1167,7 +1189,6 @@ mod tests {
                 env_of("graphite"),
                 [0.1, 0.001, 0.02],
                 [3.0, 100.0, 0.0],
-                None,
                 env.temperature,
                 env.pressure,
             ));
@@ -1203,7 +1224,6 @@ mod tests {
             env_of("aluminum"),
             [0.05; 3],
             [0.0, 5000.0, 0.0],
-            None,
             env.temperature,
             env.pressure,
         );
@@ -1233,7 +1253,6 @@ mod tests {
             env_of("graphite"),
             [0.1, 0.001, 0.02],
             [3.0, 100.0, 0.0],
-            None,
             env.temperature,
             env.pressure,
         ));
@@ -1256,7 +1275,6 @@ mod tests {
             env_of("graphite"),
             [0.001, 0.1, 0.1],
             [0.0, 100.0, 0.0],
-            None,
             env.temperature,
             env.pressure,
         ));
@@ -1283,7 +1301,6 @@ mod tests {
             light,
             [0.5; 3],
             [0.0, 1.0, 0.0],
-            None,
             288.0,
             101_325.0,
         ));
@@ -1390,7 +1407,6 @@ mod tests {
             env_of("water"),
             [0.05, 0.05, 0.05],
             [0.0, 0.05, 0.0],
-            None,
             263.15,
             env.pressure,
         );
@@ -1441,7 +1457,6 @@ mod tests {
             env_of("water"),
             [0.05; 3],
             [0.0, 0.05, 0.0],
-            None,
             272.0,
             env.pressure,
         );
@@ -1461,7 +1476,6 @@ mod tests {
             env_of("copper"),
             [0.05; 3],
             [0.0, 0.05, 0.0],
-            None,
             600.0,
             env.pressure,
         ));
@@ -1479,7 +1493,6 @@ mod tests {
             env_of("copper"),
             [0.05; 3],
             [0.0, 0.05, 0.0],
-            None,
             600.0,
             env.pressure,
         ));
@@ -1503,7 +1516,6 @@ mod tests {
             env_of("copper"),
             [0.05; 3],
             [0.0, 0.05, 0.0],
-            None,
             600.0,
             0.0,
         ));
@@ -1571,7 +1583,6 @@ mod tests {
             env_of("water"),
             [0.1; 3],
             [3.0, 2.0, 0.0],
-            None,
             268.15,
             env.pressure,
         );
@@ -1641,7 +1652,6 @@ mod tests {
             env_of("copper"),
             [h; 3],
             [-h, 0.0, 0.0],
-            None,
             400.0,
             0.0,
         );
@@ -1651,7 +1661,6 @@ mod tests {
             env_of("copper"),
             [h; 3],
             [h, 0.0, 0.0],
-            None,
             300.0,
             0.0,
         );

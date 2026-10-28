@@ -104,6 +104,10 @@ impl JointHierarchy {
         self.joints.get_mut(name).ok_or(JointError::Missing)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> usize {
         self.joints.len()
     }
@@ -121,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut h = JointHierarchy::new();
         h.add(Joint::new("body").unwrap());
         h.add(Joint::new("arm").unwrap());

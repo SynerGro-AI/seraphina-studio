@@ -19,12 +19,15 @@ pub struct CompLayer {
     pub opacity: KeyTrack,
 }
 
+/// What the cached preview was rendered from: time, opacities, visibility, blends.
+type PreviewKey = (f32, Vec<f32>, Vec<bool>, Vec<BlendMode>);
+
 pub struct CompState {
     pub layers: Vec<CompLayer>,
     pub selected: usize,
     pub clock: Clock,
     tex: Option<egui::TextureHandle>,
-    last: Option<(f32, Vec<f32>, Vec<bool>, Vec<BlendMode>)>,
+    last: Option<PreviewKey>,
 }
 
 fn load_preview(path: &str) -> Option<Raster> {
@@ -547,5 +550,71 @@ impl CompState {
         self.tex = None;
         self.last = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn two_layers() -> CompState {
+        let base = ImageLayer::new("Base", Raster::filled(PW, PH, [200, 100, 40, 255]));
+        let mut grade = ImageLayer::new("Grade", Raster::filled(PW, PH, [128, 255, 0, 255]));
+        grade.blend = BlendMode::Multiply;
+        let mut k = KeyTrack::new();
+        k.set(0.0, 0.0);
+        k.set(2.0, 1.0);
+        CompState {
+            layers: vec![
+                CompLayer {
+                    layer: base,
+                    opacity: KeyTrack::new(),
+                },
+                CompLayer {
+                    layer: grade,
+                    opacity: k,
+                },
+            ],
+            selected: 1,
+            clock: Clock::new(4.0),
+            tex: None,
+            last: None,
+        }
+    }
+
+    fn px(s: &CompState, t: f32) -> [u8; 4] {
+        let f = s.frame(t);
+        let p = f.data.as_chunks::<4>().0;
+        assert!(
+            p.iter().all(|q| *q == p[0]),
+            "flat layers give a flat frame"
+        );
+        p[0]
+    }
+
+    // multiply: 200·128/255 = 100.4, 100·255/255 = 100, 40·0 = 0
+    #[test]
+    fn frames_blend_keyed_opacity_to_hand_computed_pixels() {
+        let mut s = two_layers();
+        assert_eq!(px(&s, 0.0), [200, 100, 40, 255]);
+        // halfway between the keys: opacity 0.5
+        assert_eq!(px(&s, 1.0), [150, 100, 20, 255]);
+        assert_eq!(px(&s, 2.0), [100, 100, 0, 255]);
+        assert_eq!(px(&s, 3.5), [100, 100, 0, 255], "holds after the last key");
+        // opacity on a keyed layer keys it at the playhead (25% at 1 s)
+        s.clock.time = 1.0;
+        let r = s.apply(&AppCommand::SetLayerOpacity {
+            layer: Some("Grade".into()),
+            opacity: 25.0,
+        });
+        assert!(matches!(r, Some(Ok(_))), "{:?}", r);
+        assert_eq!(px(&s, 1.0), [175, 100, 30, 255]);
+        assert_eq!(px(&s, 2.0), [100, 100, 0, 255], "other keys untouched");
+        // hidden layers do not render
+        s.apply(&AppCommand::SetLayerVisibility {
+            layer: Some("Grade".into()),
+            visible: false,
+        });
+        assert_eq!(px(&s, 2.0), [200, 100, 40, 255]);
     }
 }

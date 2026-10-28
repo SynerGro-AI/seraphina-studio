@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut r = MaterialRegistry::new();
         let c = Atom::new(6, 6, 6);
         MaterialsLab::synthesize(&mut r, "carbon", &c).unwrap();

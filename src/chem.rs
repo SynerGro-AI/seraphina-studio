@@ -550,14 +550,15 @@ impl Equation {
             };
             m.swap(row, pr);
             let pv = m[row][col];
-            for c in 0..n {
-                m[row][c] = div(m[row][c], pv);
+            for v in m[row].iter_mut().take(n) {
+                *v = div(*v, pv);
             }
-            for r in 0..m.len() {
-                if r != row && m[r][col].0 != 0 {
-                    let f = m[r][col];
-                    for c in 0..n {
-                        m[r][c] = sub(m[r][c], mul(f, m[row][c]));
+            let pivot = m[row].clone();
+            for (r, line) in m.iter_mut().enumerate() {
+                if r != row && line[col].0 != 0 {
+                    let f = line[col];
+                    for (v, p) in line.iter_mut().zip(&pivot).take(n) {
+                        *v = sub(*v, mul(f, *p));
                     }
                 }
             }
@@ -1088,11 +1089,14 @@ impl Reactor {
     }
 }
 
+/// (formula, T_melt K, ΔH_fus kJ/mol, Some((T_boil K, ΔH_vap kJ/mol))).
+pub type Transition = (&'static str, f64, f64, Option<(f64, f64)>);
+
 /// Phase transitions of the condensed species: (formula, T_melt K,
 /// ΔH_fus kJ/mol, T_boil K, ΔH_vap kJ/mol); CRC Handbook 6-139 / 4-
 /// (enthalpies of fusion and vaporisation). `None` where the substance
 /// decomposes or the value is not well defined.
-pub static TRANSITIONS: &[(&str, f64, f64, Option<(f64, f64)>)] = &[
+pub static TRANSITIONS: &[Transition] = &[
     ("Fe", 1811.0, 13.81, Some((3134.0, 340.0))),
     ("Al", 933.47, 10.71, Some((2792.0, 294.0))),
     ("Cu", 1357.77, 13.26, Some((2835.0, 300.4))),

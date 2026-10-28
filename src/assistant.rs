@@ -2,7 +2,7 @@
 //!
 //! Backend trait for chat replies plus an online-learning hook for
 //! small, incremental weight updates. The shipped backend is an
-//! offline stub: it does not call any model and says so. The shipped
+//! offline help table: it does not call any model and says so. The shipped
 //! learner nudges `LiveWeights` by bounded deltas (no full rewrites).
 //! No unwraps.
 //!
@@ -60,14 +60,14 @@ pub trait AssistantBackend {
     ) -> Result<String, AssistantError>;
 }
 
-/// Offline stub. Answers from a fixed help table and states that no
+/// Offline help. Answers from a fixed help table and states that no
 /// model is connected.
 #[derive(Clone, Debug, Default)]
 pub struct OfflineBackend;
 
 impl AssistantBackend for OfflineBackend {
     fn name(&self) -> &str {
-        "Seraphina (offline stub)"
+        "Seraphina (offline help)"
     }
 
     fn is_connected(&self) -> bool {
@@ -91,7 +91,7 @@ impl AssistantBackend for OfflineBackend {
         let tip = match ctx.mode.as_str() {
             "Stream" => "Stream mode steps the real bitstream reader. Pick a read width, press Step, and compare No-wrap with Wrap past byte 255.",
             "Paint" => "Paint mode: V move, M marquee, L lasso, W quick select, C crop, J healing, S clone (Alt-click source), B brush, E eraser, G gradient, O dodge / Shift+O burn, P pen, T type, H hand, Z zoom, I eyedropper. Ctrl+Z undoes.",
-            "3D" => "3D mode: pick Select/Move/Rotate/Scale on the shelf and drag in the viewport (Alt-drag orbits). Extrude and Bevel edit the selected cube's top face. Wireframe only; there is no renderer yet.",
+            "3D" => "3D mode renders with a z-buffered software rasterizer: Display offers Shaded (5), Wireframe (4) and Shaded + wire (6). Pick Select/Move/Rotate/Scale on the shelf and drag in the viewport (Alt-drag orbits). Extrude and Bevel edit the selected cube's top face.",
             "Animate" => "Animate mode draws frame by frame. Turn on onion skin to see neighbouring frames; Space plays.",
             "Composite" => "Composite mode keys layer opacity over time. Move the playhead, set opacity, press Add Key.",
             _ => "Pick a mode at the top to get started.",
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn stub_says_offline() {
+    fn offline_help_says_it_is_offline() {
         let mut b = OfflineBackend;
         assert!(!b.is_connected());
         let r = b

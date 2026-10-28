@@ -6,7 +6,7 @@
 //! command bus (`commands::AppCommand`, dispatched by `App::dispatch`).
 //! Seraphina (assistant_panel) drives the same bus through an LLM
 //! provider (xAI by default), the Seraphina.AGI CLI for memory, or a
-//! labelled offline stub.
+//! labelled offline help mode.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -627,7 +627,7 @@ impl App {
             None => "not configured (no key)".into(),
         };
         format!(
-            "Active mode: {} (modes: Paint, Composite, 3D, Animate, Stream, Materials). Theme {}. Panels: tools {}, inspector {}, timeline {}, shelf {}, assistant {}.\nPaint: {}\n{}\n{}\n{}\n{}\n{}\n{}\nGrok Imagine video: {}.",
+            "Active mode: {} (modes: Paint, Composite, 3D, Animate, Stream, Materials). Theme {}. Panels: tools {}, inspector {}, timeline {}, shelf {}, assistant {}.\nPaint: {}\n{}\n{}\n{}\n{}\n{}\n{} {}\nGrok Imagine video: {}.",
             self.mode.label(),
             if self.dark { "dark" } else { "light" },
             self.show_tools,
@@ -641,7 +641,8 @@ impl App {
             self.comp.context(),
             self.stream.context(),
             self.output.context(),
-            format!("{} {}", self.materials.context(), self.lab.context()),
+            self.materials.context(),
+            self.lab.context(),
             vid
         )
     }
@@ -909,12 +910,16 @@ impl App {
             C::Undo | C::Redo => match self.mode {
                 Mode::Paint => self.paint.apply(cmd).unwrap_or(Err("unsupported".into())),
                 Mode::Animate => {
-                    if matches!(cmd, C::Undo) {
+                    let done = if matches!(cmd, C::Undo) {
                         self.anim.undo()
                     } else {
                         self.anim.redo()
+                    };
+                    if done {
+                        Ok(format!("Animate {}", cmd.name()))
+                    } else {
+                        Err(format!("nothing to {} in Animate", cmd.name()))
                     }
-                    Ok(cmd.name())
                 }
                 Mode::Scene => {
                     let cur = self.scene_snap();
@@ -2417,7 +2422,7 @@ impl App {
                     .as_chunks_mut::<4>()
                     .0
                     .iter_mut()
-                    .zip(r.data.chunks_exact(4))
+                    .zip(r.data.as_chunks::<4>().0)
                 {
                     let a = s[3] as u32;
                     for c in 0..3 {
@@ -2526,10 +2531,12 @@ impl App {
                 menv,
                 half,
                 c,
-                vol,
                 pr.temp.unwrap_or(env.temperature),
                 env.pressure,
             );
+            if let Some(v) = vol {
+                b = b.with_volume(v);
+            }
             b.heater = pr.heater;
             // open meshes (planes) are static floors
             b.fixed = pr.fixed || !m.is_closed();
@@ -3476,6 +3483,7 @@ fn main() -> eframe::Result<()> {
 mod tests {
     use super::*;
     use crate::llm::{LlmReply, MockProvider, ToolCall};
+    use egui::Pos2;
     use std::sync::Arc;
 
     fn input(t: f64) -> egui::RawInput {
@@ -3493,6 +3501,141 @@ mod tests {
         for i in 0..frames {
             let _ = ctx.run(input(t0 + i as f64 * 0.05), |ctx| app.frame(ctx));
         }
+    }
+
+    /// Press at `from`, drag through `steps` points to `to`, release.
+    fn drag(app: &mut App, ctx: &egui::Context, from: Pos2, to: Pos2, t0: f64) -> f64 {
+        use egui::{Event, Modifiers, PointerButton};
+        let mut t = t0;
+        let mut frame = |events: Vec<Event>, t: &mut f64| {
+            let mut i = input(*t);
+            i.events = events;
+            let _ = ctx.run(i, |ctx| app.frame(ctx));
+            *t += 0.05;
+        };
+        let press = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(vec![Event::PointerMoved(from)], &mut t);
+        frame(vec![press(from, true)], &mut t);
+        let steps = 8;
+        for k in 1..=steps {
+            let p = from + (to - from) * (k as f32 / steps as f32);
+            frame(vec![Event::PointerMoved(p)], &mut t);
+        }
+        frame(vec![press(to, false)], &mut t);
+        frame(vec![], &mut t);
+        t
+    }
+
+    #[test]
+    fn an_animate_stroke_inks_only_the_current_frame_and_undoes_in_one_step() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, None);
+        app.mode = Mode::Animate;
+        run(&mut app, &ctx, 3, 0.0);
+        assert!(
+            app.dispatch(&AppCommand::Undo, Origin::User).is_err(),
+            "undo with no history must say so"
+        );
+        app.dispatch(&AppCommand::TimelineScrub { time: 0.5 }, Origin::User)
+            .unwrap();
+        let cur = app.anim.current();
+        let before = app.anim.frames.clone();
+        drag(
+            &mut app,
+            &ctx,
+            Pos2::new(700.0, 450.0),
+            Pos2::new(900.0, 470.0),
+            1.0,
+        );
+        assert_eq!(app.anim.current(), cur);
+        for (i, (a, b)) in before.iter().zip(&app.anim.frames).enumerate() {
+            if i != cur {
+                assert!(a.data == b.data, "frame {} changed", i);
+            }
+        }
+        let ink = |f: &obs_rust_bitstream::ui_canvas::Raster| -> Vec<[u8; 4]> {
+            f.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] > 0)
+                .copied()
+                .collect()
+        };
+        let inked = ink(&app.anim.frames[cur]);
+        assert!(inked.len() > 200, "stroke covers {} px", inked.len());
+        // the brush colour, at full strength in the stroke's core
+        assert!(inked.contains(&[28, 28, 30, 255]));
+        app.dispatch(&AppCommand::Undo, Origin::User).unwrap();
+        assert!(
+            app.anim.frames[cur].data == before[cur].data,
+            "one undo removes the stroke"
+        );
+        app.dispatch(&AppCommand::Redo, Origin::User).unwrap();
+        assert_eq!(ink(&app.anim.frames[cur]), inked, "redo is exact");
+        assert!(app.dispatch(&AppCommand::Redo, Origin::User).is_err());
+    }
+
+    #[test]
+    fn a_paint_brush_stroke_changes_only_the_selected_layer_and_undoes_exactly() {
+        let ctx = egui::Context::default();
+        let mut app = app_with(&ctx, None);
+        app.mode = Mode::Paint;
+        run(&mut app, &ctx, 3, 0.0);
+        app.dispatch(
+            &AppCommand::SelectLayer {
+                layer: "Paint".into(),
+            },
+            Origin::User,
+        )
+        .unwrap();
+        app.paint.tool = paint::Tool::Brush;
+        let sel = app.paint.doc.selected;
+        // layers may be trimmed to their content; compare them in document space
+        let pixels = |app: &App| -> Vec<Vec<u8>> {
+            let (w, h) = (app.paint.doc.width, app.paint.doc.height);
+            app.paint
+                .doc
+                .layers
+                .iter()
+                .map(|l| {
+                    let mut l = l.clone();
+                    l.bake_to(w, h);
+                    l.raster.data.clone()
+                })
+                .collect()
+        };
+        let before = pixels(&app);
+        drag(
+            &mut app,
+            &ctx,
+            Pos2::new(700.0, 450.0),
+            Pos2::new(900.0, 470.0),
+            1.0,
+        );
+        let after = pixels(&app);
+        for (i, (a, b)) in before.iter().zip(&after).enumerate() {
+            if i != sel {
+                assert!(a == b, "layer {} changed", app.paint.doc.layers[i].name);
+            }
+        }
+        let changed = before[sel]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(after[sel].as_chunks::<4>().0)
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(changed > 200, "stroke changed {} px", changed);
+        app.dispatch(&AppCommand::Undo, Origin::User).unwrap();
+        assert!(pixels(&app) == before, "undo is exact");
+        app.dispatch(&AppCommand::Redo, Origin::User).unwrap();
+        assert!(pixels(&app) == after, "redo is exact");
     }
 
     #[test]
@@ -3799,7 +3942,7 @@ mod tests {
     /// the worker). `cargo test --release --features ui --bin ui -- --ignored
     /// measure_ui_frame_time --nocapture` (SERAPHINA_BENCH_BODIES, default 1500).
     #[test]
-    #[ignore]
+    #[ignore = "benchmark: run with --release and --nocapture"]
     fn measure_ui_frame_time_with_a_heavy_arena() {
         use obs_rust_bitstream::arena::{stress_pile, Collide, Environment};
         let n: usize = std::env::var("SERAPHINA_BENCH_BODIES")
@@ -4492,13 +4635,18 @@ mod tests {
             )
             .is_err());
         assert!(!app.output.is_live());
-        if output::find_ffmpeg().is_err() {
+        // Windows runners and Wine have no ffmpeg.exe: there the bus must
+        // refuse clearly. Everywhere else ffmpeg is required and the real
+        // recording below must run; a missing ffmpeg fails the test.
+        if cfg!(windows) && output::find_ffmpeg().is_err() {
             assert!(app
                 .dispatch(&AppCommand::SetRecording { recording: true }, Origin::User)
                 .unwrap_err()
                 .contains("ffmpeg was not found"));
             return;
         }
+        output::find_ffmpeg()
+            .expect("stream_commands_and_status needs ffmpeg (on PATH or SERAPHINA_FFMPEG)");
         // real recording of the Stream-mode bit view through the bus
         app.mode = Mode::Stream;
         let msg = app
@@ -4550,7 +4698,7 @@ mod tests {
 
     /// Rewrites assets/mountain_spire.psd from the built-in sample document.
     #[test]
-    #[ignore]
+    #[ignore = "tool, not a test: rewrites assets/mountain_spire.psd"]
     fn regenerate_sample_psd() {
         let mut t = Toasts {
             now: 0.0,
@@ -4605,13 +4753,11 @@ mod tests {
         }
     }
 
-    /// The chat panel routes CLI intents to the real `seraphina` CLI (skipped if not installed).
+    /// The chat panel routes CLI intents to the real `seraphina` CLI.
     #[test]
+    #[ignore = "needs the seraphina CLI on PATH (pip install seraphina-agi)"]
     fn chat_routes_memory_intents_to_the_real_cli() {
-        let Some(mut cli) = llm::SeraphinaCli::detect() else {
-            eprintln!("skipped: seraphina not on PATH");
-            return;
-        };
+        let mut cli = llm::SeraphinaCli::detect().expect("seraphina CLI not found on PATH");
         let home = std::env::temp_dir().join(format!("seraphina_chat_cli_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         cli.home = Some(home.clone());
@@ -5069,7 +5215,7 @@ mod tests {
         assert!(last
             .text
             .contains("Offline: no language model is configured"));
-        assert_eq!(app.assistant.backend_label(), "Offline stub");
+        assert_eq!(app.assistant.backend_label(), "Offline help");
     }
 
     #[test]
@@ -5440,12 +5586,15 @@ mod tests {
     /// Live, billed: real xAI tool calling through the bus. Run with
     /// `cargo test --features ui --bin ui -- --ignored live_xai_tool_calling_smoke`.
     #[test]
-    #[ignore]
+    #[ignore = "live, billed: needs XAI_API_KEY or SERAPHINA_GROK_API_KEY"]
     fn live_xai_tool_calling_smoke() {
-        let Some(p) = llm::OpenAiCompat::from_env() else {
-            eprintln!("SKIPPED live_xai_tool_calling_smoke: no XAI_API_KEY");
-            return;
-        };
+        assert!(
+            ["XAI_API_KEY", "SERAPHINA_GROK_API_KEY"]
+                .iter()
+                .any(|k| std::env::var_os(k).is_some()),
+            "live_xai_tool_calling_smoke needs XAI_API_KEY or SERAPHINA_GROK_API_KEY"
+        );
+        let p = llm::OpenAiCompat::from_env().expect("provider from env");
         let ctx = egui::Context::default();
         let mut app = app_with(&ctx, Some(Arc::new(p)));
         app.assistant.input =

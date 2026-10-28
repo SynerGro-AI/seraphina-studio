@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut a = Reconnect::new();
         let mut b = Reconnect::new();
         a.start();

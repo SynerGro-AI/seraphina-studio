@@ -1153,10 +1153,10 @@ mod tests {
     }
 
     #[test]
-    fn concat_runs_off_thread_when_ffmpeg_exists() {
-        let Ok(ff) = crate::output::find_ffmpeg() else {
-            return;
-        };
+    #[cfg_attr(windows, ignore = "the Windows runners and Wine have no ffmpeg.exe")]
+    fn concat_runs_off_thread() {
+        let ff = crate::output::find_ffmpeg()
+            .expect("concat_runs_off_thread needs ffmpeg (on PATH or SERAPHINA_FFMPEG)");
         let dir = std::env::temp_dir().join(format!("seraphina-concat-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1171,9 +1171,7 @@ mod tests {
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
-            if !ok {
-                return;
-            }
+            assert!(ok, "ffmpeg could not make test clip {}", f.display());
             body.push_str(&format!("file '{}'\n", f.display()));
         }
         let out = stitch_target(&dir, "t");
@@ -1209,12 +1207,9 @@ mod tests {
     /// Live, billed: run explicitly with `cargo test --features ui --bin ui -- --ignored live_imagine`.
     /// Writes into SERAPHINA_LIVE_OUT (default: temp dir).
     #[test]
-    #[ignore]
+    #[ignore = "live, billed: needs XAI_API_KEY or SERAPHINA_GROK_API_KEY"]
     fn live_imagine_video_and_image() {
-        let Some(g) = GrokImagine::from_env() else {
-            eprintln!("SKIPPED live_imagine_video_and_image: no XAI_API_KEY");
-            return;
-        };
+        let g = GrokImagine::from_env().expect("live_imagine_video_and_image needs XAI_API_KEY");
         let out = std::env::var("SERAPHINA_LIVE_OUT")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir());

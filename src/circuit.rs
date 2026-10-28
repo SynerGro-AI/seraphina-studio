@@ -328,18 +328,20 @@ const GMIN: f64 = 1e-12;
 fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for col in 0..n {
-        let piv =
-            (col..n).max_by(|&i, &j| a[i][col].abs().partial_cmp(&a[j][col].abs()).unwrap())?;
+        let piv = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
         if a[piv][col].abs() < 1e-300 {
             return None;
         }
         a.swap(col, piv);
         b.swap(col, piv);
-        for r in col + 1..n {
-            let f = a[r][col] / a[col][col];
+        let (top, rest) = a.split_at_mut(col + 1);
+        let prow = &top[col];
+        for (k, row) in rest.iter_mut().enumerate() {
+            let r = col + 1 + k;
+            let f = row[col] / prow[col];
             if f != 0.0 {
-                for c in col..n {
-                    a[r][c] -= f * a[col][c];
+                for (v, p) in row[col..n].iter_mut().zip(&prow[col..n]) {
+                    *v -= f * p;
                 }
                 b[r] -= f * b[col];
             }
@@ -526,8 +528,8 @@ impl Circuit {
                     rhs[k] += i;
                 }
             };
-            for k in 0..nv {
-                a[k][k] += GMIN;
+            for (k, row) in a.iter_mut().enumerate().take(nv) {
+                row[k] += GMIN;
             }
             let mut si = 0;
             for e in &self.elems {

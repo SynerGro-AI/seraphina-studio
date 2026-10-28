@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let e = PeriodicTable::get(1).unwrap();
         assert_eq!(e.symbol, "H");
         assert_eq!(e.neutrons, 0);

@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut w = LiveWeights::new();
         w.set("glow", 0.5).unwrap();
         assert_eq!(w.get("glow").unwrap(), 0.5);

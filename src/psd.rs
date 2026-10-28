@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut a = Psd::new(100, 100);
         a.add_layer("one", true, 255);
         let mut b = Psd::new(100, 100);

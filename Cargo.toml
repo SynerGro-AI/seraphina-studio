@@ -3,11 +3,11 @@ name = "obs-rust-bitstream"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-description = "Public foundation for the OBS Studio rewrite in Rust. Perfect bitstream port with Position trait (wrap vs no-wrap is type-level)."
+description = "Seraphina Studio (paint, composite, 3D, animate, stream, materials lab) and the library behind it."
 license = "GPL-2.0-or-later"
 repository = "https://github.com/SynerGro-AI/obs-rust-bitstream"
 readme = "README.md"
-keywords = ["obs", "bitstream", "rust", "obs-studio", "ffi", "rewrite"]
+keywords = ["paint", "physics", "streaming", "egui", "bitstream"]
 categories = ["multimedia", "encoding"]
 
 [lib]
@@ -16,20 +16,6 @@ path = "src/lib.rs"
 
 [dependencies]
 
-objc2 = { version = "0.6", optional = true }
-objc2-foundation = { version = "0.3", optional = true }
-objc2-av-foundation = { version = "0.3", optional = true, features = [
-    "AVCaptureSession",
-    "AVCaptureDevice",
-    "AVCaptureInput",
-    "AVCaptureOutputBase",
-    "AVCaptureVideoDataOutput",
-    "AVMediaFormat",
-] }
-objc2-core-video = { version = "0.3", optional = true }
-objc2-core-media = { version = "0.3", optional = true }
-dispatch2 = { version = "0.2", optional = true }
-libc = "0.2.191"
 eframe = { version = "0.32", optional = true, features = ["wgpu"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg", "png"] }
 egui-phosphor = { version = "0.10", optional = true }
@@ -39,12 +25,9 @@ serde_json = { version = "1", optional = true, features = ["float_roundtrip"] }
 ureq = { version = "2", optional = true, default-features = false, features = ["tls", "json"] }
 ab_glyph = { version = "0.2", optional = true }
 epaint_default_fonts = { version = "0.32", optional = true }
-cpal = { version = "0.15", optional = true }
-rusty_h264 = "0.14"
 zip = { version = "9", optional = true, default-features = false, features = ["deflate-flate2"] }
 dirs = { version = "6", optional = true }
 rfd = { version = "0.17", optional = true, default-features = false, features = ["xdg-portal"] }
-windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # UI only: crash message box, Credential Manager, single-instance focus
@@ -53,9 +36,6 @@ windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation
 [features]
 default = []
 ui = ["eframe", "image", "dep:egui-phosphor", "dep:serde", "dep:serde_json", "dep:ureq", "dep:ab_glyph", "dep:epaint_default_fonts", "dep:zip", "dep:rfd", "dep:dirs", "dep:windows-sys"]
-avfoundation = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foundation", "dep:objc2-core-video", "dep:objc2-core-media", "dep:dispatch2"]
-audio = ["dep:cpal"]
-windows = ["dep:windows"]
 
 
 [[bin]]

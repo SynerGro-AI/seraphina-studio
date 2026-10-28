@@ -387,9 +387,9 @@ impl PsdPixels {
         let p = planes(&merged, w * h);
         be16(&mut f, 1);
         let mut rows = Vec::new();
-        for c in 0..3 {
+        for plane in p.iter().take(3) {
             for y in 0..h {
-                rows.push(packbits_encode(&p[c][y * w..(y + 1) * w]));
+                rows.push(packbits_encode(&plane[y * w..(y + 1) * w]));
             }
         }
         for r in &rows {

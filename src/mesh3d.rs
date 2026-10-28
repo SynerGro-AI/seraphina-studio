@@ -1318,9 +1318,9 @@ impl Frame3d {
                 let i = y * self.w + x;
                 if d < self.depth[i] {
                     self.ids[i] = id;
-                    for c in 0..3 {
+                    for (c, &k) in color.iter().enumerate().take(3) {
                         let o = self.rgba[i * 4 + c] as f32;
-                        self.rgba[i * 4 + c] = (o + (color[c] as f32 - o) * a).round() as u8;
+                        self.rgba[i * 4 + c] = (o + (k as f32 - o) * a).round() as u8;
                     }
                 }
             }
@@ -1345,9 +1345,9 @@ impl Frame3d {
             let d = 1.0 / (ia + (ib - ia) * t) * (1.0 - bias);
             let i = y as usize * self.w + x as usize;
             if d <= self.depth[i] {
-                for c in 0..3 {
+                for (c, &k) in color.iter().enumerate().take(3) {
                     let o = self.rgba[i * 4 + c] as f32;
-                    self.rgba[i * 4 + c] = (o + (color[c] as f32 - o) * al).round() as u8;
+                    self.rgba[i * 4 + c] = (o + (k as f32 - o) * al).round() as u8;
                 }
             }
         }

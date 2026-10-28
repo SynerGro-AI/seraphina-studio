@@ -88,6 +88,13 @@ impl Gizmo {
     }
 }
 
+/// The Display card's modes and their keyboard shortcuts.
+pub const DISPLAY_MODES: [(Shading, &str); 3] = [
+    (Shading::Shaded, "5"),
+    (Shading::Wireframe, "4"),
+    (Shading::ShadedWire, "6"),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Shading {
     Shaded,
@@ -535,8 +542,8 @@ impl SceneState {
                 let o = &mut self.objs[i];
                 let mut parts = Vec::new();
                 if let Some(d) = translate {
-                    for k in 0..3 {
-                        o.pos[k] += d[k];
+                    for (p, dk) in o.pos.iter_mut().zip(d) {
+                        *p += dk;
                     }
                     if d[1] != 0.0 && !o.track_y.is_empty() {
                         o.track_y.set(t, o.pos[1]);
@@ -1076,11 +1083,7 @@ impl SceneState {
             ui.checkbox(&mut self.grid, "Show grid");
         });
         theme::card(ui, p, "Display", |ui| {
-            for (s, key) in [
-                (Shading::Shaded, "5"),
-                (Shading::Wireframe, "4"),
-                (Shading::ShadedWire, "6"),
-            ] {
+            for (s, key) in DISPLAY_MODES {
                 if ui
                     .add_sized(
                         [ui.available_width(), 26.0],
@@ -2139,6 +2142,29 @@ impl SceneState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The offline help tip for 3D describes the viewport the app has: every
+    /// Display mode with its key, and no claim that rendering is missing.
+    #[test]
+    fn offline_3d_tip_matches_the_display_modes() {
+        use obs_rust_bitstream::assistant::{
+            AssistantBackend, ChatMessage, OfflineBackend, Role, WorkspaceContext,
+        };
+        let tip = OfflineBackend
+            .respond(
+                &[ChatMessage::new(Role::User, "help")],
+                &WorkspaceContext {
+                    mode: "3D".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("offline tip");
+        for (s, key) in DISPLAY_MODES {
+            assert!(tip.contains(&format!("{} ({key})", s.label())), "{tip}");
+        }
+        assert!(!tip.to_lowercase().contains("no renderer"), "{tip}");
+        assert!(!tip.contains("Wireframe only"), "{tip}");
+    }
 
     fn toasts() -> Toasts {
         Toasts {

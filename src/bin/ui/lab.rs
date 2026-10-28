@@ -124,6 +124,9 @@ pub const CIRCUITS: &[(&str, &str)] = &[
     ("silicon", "Doped silicon resistivity"),
 ];
 
+/// One plotted line: label, colour, points.
+pub type Series = (String, Color32, Vec<(f64, f64)>);
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CircParams {
     pub voltage: f64,
@@ -139,8 +142,8 @@ pub struct CircRun {
     pub title: String,
     pub xlabel: String,
     pub ylabel: String,
-    pub series: Vec<(String, Color32, Vec<(f64, f64)>)>,
-    pub series2: Option<(String, Vec<(String, Color32, Vec<(f64, f64)>)>)>,
+    pub series: Vec<Series>,
+    pub series2: Option<(String, Vec<Series>)>,
     pub readouts: Vec<(String, String)>,
     pub events: Vec<String>,
     pub netlist: Vec<String>,
@@ -1581,8 +1584,7 @@ impl LabState {
                 ui,
                 p,
                 "Temperature (adiabatic, constant pressure)",
-                "log₁₀ time (s)",
-                "K",
+                ("log₁₀ time (s)", "K"),
                 &[("T".into(), C_B, tpts)],
                 &marks,
                 Vec2::new(w / 2.0 - 4.0, 260.0),
@@ -1591,8 +1593,7 @@ impl LabState {
                 ui,
                 p,
                 "Conversion of the limiting reactant",
-                "log₁₀ time (s)",
-                "%",
+                ("log₁₀ time (s)", "%"),
                 &[("conversion".into(), C_A, cpts)],
                 &[],
                 Vec2::new(w / 2.0 - 4.0, 260.0),
@@ -1609,8 +1610,7 @@ impl LabState {
                 ui,
                 p,
                 "ΔG(T): forward is favoured where the curve is below zero",
-                "T (K)",
-                "kJ/mol",
+                ("T (K)", "kJ/mol"),
                 &[("ΔG".into(), C_C, gpts)],
                 &[
                     Mark::H(0.0, p.muted, "ΔG = 0".into()),
@@ -1846,8 +1846,7 @@ impl LabState {
                 ui,
                 p,
                 "",
-                &r.xlabel,
-                &r.ylabel,
+                (&r.xlabel, &r.ylabel),
                 &r.series,
                 &[],
                 Vec2::new(w, h),
@@ -1856,7 +1855,7 @@ impl LabState {
         if let Some((yl, s2)) = &r.series2 {
             ui.horizontal(|ui| {
                 ui.add_space(SP_SM);
-                plot(ui, p, "", &r.xlabel, yl, s2, &[], Vec2::new(w, 160.0));
+                plot(ui, p, "", (&r.xlabel, yl), s2, &[], Vec2::new(w, 160.0));
             });
         }
         for e in &r.events {
@@ -2165,7 +2164,7 @@ impl LabState {
         ui.add_space(SP_SM);
         ui.horizontal(|ui| {
             ui.add_space(SP_SM);
-            let series: Vec<(String, Color32, Vec<(f64, f64)>)> = lib
+            let series: Vec<Series> = lib
                 .cells
                 .iter()
                 .zip([C_A, C_B, C_C])
@@ -2178,8 +2177,7 @@ impl LabState {
                     "Level 1: transfer curves at {:.0} °C, from the transistor models",
                     lib.t - 273.15
                 ),
-                "V(in) (V)",
-                "V(out) (V)",
+                ("V(in) (V)", "V(out) (V)"),
                 &series,
                 &[],
                 Vec2::new(w * 0.5 - 4.0, 250.0),
@@ -2262,8 +2260,7 @@ impl LabState {
                         "Heat sweep at {:.0} MHz: ALU settle time vs the clock budget",
                         self.cpu.clock_mhz
                     ),
-                    "die °C",
-                    "ps",
+                    ("die °C", "ps"),
                     &[
                         ("carry-chain settle".into(), C_B, settle),
                         ("budget (period − setup − clk→Q)".into(), C_A, budget),
@@ -2912,9 +2909,8 @@ pub fn plot(
     ui: &mut egui::Ui,
     p: &Palette,
     title: &str,
-    xl: &str,
-    yl: &str,
-    series: &[(String, Color32, Vec<(f64, f64)>)],
+    (xl, yl): (&str, &str),
+    series: &[Series],
     marks: &[Mark],
     size: Vec2,
 ) {

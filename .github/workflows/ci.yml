@@ -7,6 +7,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push to the same branch or PR cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -18,15 +23,17 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    # Advisory only for now (no -D warnings); see the warning count in the log.
+    # Blocking: any warning fails, on Linux and on the Windows target.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --locked --all-targets --features ui
+          targets: x86_64-pc-windows-gnu
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: cargo clippy --locked --all-targets --features ui -- -D warnings
+      - run: cargo clippy --locked --all-targets --features ui --target x86_64-pc-windows-gnu -- -D warnings
 
   audit:
     # RustSec advisories against Cargo.lock. Unmaintained/yanked crates are
@@ -40,6 +47,16 @@ jobs:
           tool: cargo-audit
       - run: cargo audit
 
+  machete:
+    # Every dependency in Cargo.toml must be used.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+      - run: cargo machete
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -47,13 +64,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
-      # ffmpeg + a local RTMP server so the record (ffprobe) and
-      # stream/reconnect tests run instead of skipping.
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg gcc-mingw-w64-x86-64
+      # ffmpeg, a local RTMP server and a PulseAudio server: the record
+      # (ffprobe), stream/reconnect/stream-key and capture-device audio
+      # tests require them and fail without them.
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg pulseaudio pulseaudio-utils gcc-mingw-w64-x86-64
+      - run: pulseaudio --start --exit-idle-time=-1 && pactl info
       - name: mediamtx
         run: |
           mkdir -p "$HOME/opt/mediamtx"
-          curl -fsSL https://github.com/bluenviron/mediamtx/releases/download/v1.9.3/mediamtx_v1.9.3_linux_amd64.tar.gz | tar -xz -C "$HOME/opt/mediamtx"
+          curl -fsSL -o mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/download/v1.9.3/mediamtx_v1.9.3_linux_amd64.tar.gz
+          echo "0b885dbfa4ef9c14cd00191c57d90d804255ff50403a28b85ceee7988c535b60  mediamtx.tar.gz" | sha256sum -c -
+          tar -xzf mediamtx.tar.gz -C "$HOME/opt/mediamtx"
       - run: cargo test --locked --verbose
       # UI tests run headless against egui::Context; no display needed.
       - run: cargo test --locked --features ui --bin ui
@@ -66,9 +87,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --locked --release --features ui --bin ui
-      # ffmpeg-dependent tests skip with a message when ffmpeg isn't on PATH;
-      # the mediamtx RTMP test is Linux-only.
-      - run: cargo test --locked --features ui --bin ui
+      # Library and app tests on real Windows. This job must be a REQUIRED
+      # check in branch protection: some tests only fail here (e.g.
+      # ui_canvas::save_target, which depends on Windows path rules).
+      # ffmpeg and mediamtx tests are #[ignore]d on Windows (with the reason).
+      - run: cargo test --locked --features ui --lib --bins
       - run: copy target\release\ui.exe SeraphinaStudio.exe
         shell: cmd
       - uses: actions/upload-artifact@v4
@@ -81,19 +104,6 @@ jobs:
             out.h264
             out.avbn
             out.obsr
-
-  audio:
-    # The optional cpal capture backend (--features audio) must keep compiling.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config gcc-mingw-w64-x86-64
-      - run: cargo build --locked --all-targets --features ui,audio
-      - run: cargo test --locked --features audio --lib audio_cpal
-      - run: cargo build --locked --release --features ui,audio --bin ui --target x86_64-pc-windows-gnu
 
   msrv:
     # rust-version in Cargo.toml: the oldest toolchain the locked

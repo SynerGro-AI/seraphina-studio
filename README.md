@@ -1,18 +1,16 @@
 # obs-rust-bitstream
 
-**Public foundation for the OBS Studio rewrite in Rust.**
-
-Goal: beat the ~800 scripts already finished upstream by using ~10% of the API actions.  
-**Work smarter, not harder.**
-
-Reusable patterns + differential helper + AI scaffold for automated assistance.
+**Seraphina Studio**, a desktop app for paint, composite, 3D, animation,
+streaming and a materials lab, and the tested Rust library behind it. It
+started as a Rust port of OBS's `bitstream_reader` (still here as
+`bitstream`, with its C ABI); recording and streaming go through ffmpeg.
 
 ## Desktop app: Seraphina Studio
 
 A single egui/eframe window with six workspaces, a gold-on-black theme (plus
 a light theme), a custom title bar, collapsible tool sections, a Maya-style
 shelf and a live status bar. Windows is the primary target; it also runs on
-Linux and macOS.
+Linux (the CI tests run there). macOS is untested.
 
 | Mode | What is real today | Stubbed / not built yet |
 |------|--------------------|-------------------------|
@@ -21,8 +19,8 @@ Linux and macOS.
 | **3D** | Software rasterizer: z-buffered flat/Lambert shading, Shaded / Wireframe / Shaded+wire (keys 5/4/6), selection highlight; orbit/dolly; cube, plane, cylinder, joint, light, camera; extrude, bevel, **Edge Loop, Multi-Cut, Bridge, Boolean union/difference/intersection (BSP, watertight after T-junction repair), Quad Draw**; Select/Move/Rotate/Scale (Q/W/E/R); outliner; keyframed Y; general undo/redo (drags coalesce) | Per-object **materials** (Blinn-Phong, metal vs dielectric, transparency) and the **Physics Arena** (see Materials Lab below). No textures, no smooth shading, no IK/skinning/FX/render-to-file (still "Coming soon") |
 | **Materials** | Periodic table of all 118 elements (search, category filter, detail card); composition builder (formula or protons/neutrons/electrons) with stability and charge analysis; derived PBR and simulation properties; measured presets; save to the library and assign to 3D meshes | Compound/alloy properties are estimates (see below) |
 | **Animate** | Frame-by-frame drawing, onion skin, new/duplicate/clear/delete frames, fps, playback, undo | No export, no layers per frame |
-| **Stream** | Bitstream inspector driving the real `bitstream::Reader`; **real Record (MP4 H.264+AAC) and Go live (RTMP) through an ffmpeg subprocess**, canvas or screen source, status bar with elapsed time, fps, bitrate, dropped frames and errors, reconnect with exponential backoff | Needs ffmpeg installed (not bundled). Audio device capture (pulse/dshow) is wired but untested |
-| **Seraphina panel** | Real LLM agent (xAI by default) that operates the app through tool calls (see below), with streaming replies, an action log, one-click Undo and live preference learning | Offline without a key: it answers with built-in tips and says so |
+| **Stream** | Bitstream inspector driving the real `bitstream::Reader`; **real Record (MP4 H.264+AAC) and Go live (RTMP) through an ffmpeg subprocess**, canvas or screen source, status bar with elapsed time, fps, bitrate, dropped frames and errors, reconnect with exponential backoff | Needs ffmpeg installed (not bundled). Capture-device audio is tested on Linux (PulseAudio, `records_audio_from_a_real_pulse_source`); Windows DirectShow is not yet verified on hardware. On macOS, Capture device is refused as unsupported (`record_refuses_capture_audio_without_a_usable_device`). A device that can't be opened stops the recording with an error; the app never substitutes a tone or silence |
+| **Seraphina panel** | Real LLM agent (xAI by default) that operates the app through tool calls (see below), with streaming replies, an action log, one-click Undo and live preference learning | Without a key it runs in offline help mode: a fixed table of tips, no model call and no actions, and it says so |
 | **Grok Imagine panel** | Real text-to-video (`grok-imagine-video-1.5`) and text-to-image (`grok-imagine-image-2.0`). Images can be added as a Paint layer ("Image → layer") | Billed per second / per image on your xAI account |
 
 ### Materials Lab and Physics Arena
@@ -150,9 +148,10 @@ approximate.
 
 * **One command bus.** Every button, shortcut, drag and AI action becomes an
   `AppCommand` (`src/bin/ui/commands.rs`) and goes through `App::dispatch`.
-  The AI can therefore do anything the UI can, and nothing else.
-* **Tool calling.** The 88 commands are exposed as JSON-schema tools to an
-  OpenAI-compatible chat API. Calls run through a Triad gate:
+  The AI can only do what a command allows; a few commands, such as
+  `set_stream_key`, are UI-only and not offered to it.
+* **Tool calling.** The 101 commands are exposed as JSON-schema tools to an
+  OpenAI-compatible chat API (list: [docs/AI_TOOLS.md](docs/AI_TOOLS.md)). Calls run through a Triad gate:
   * the call must parse;
   * file I/O (open, save PSD, export PNG), billed generation (video, image,
     extend, stitch), going live and starting a recording need the user to
@@ -170,10 +169,13 @@ approximate.
   A summary is injected into the system prompt. The status bar shows
   "Online learning: N updates". It is stored in
   `~/.seraphina/studio/mercy_bank.json`.
-* **Seraphina.AGI CLI bridge.** If `seraphina` (`pip install seraphina-agi`)
-  is on PATH, or set via `SERAPHINA_CLI`, its native intents (`remember …`,
-  `recall`, `triad …`, `help`, `version`) are forwarded to it. Recent
-  `recall` notes are added to the prompt.
+* **Provider today: Grok (xAI).** Seraphina.AGI integration, with
+  Seraphina.AGI running as a separate local process, is planned for
+  after v0.2.0 (proposed; see "Planned (not built)").
+* **Seraphina.AGI CLI bridge (optional, today).** If `seraphina`
+  (`pip install seraphina-agi`) is on PATH, or set via `SERAPHINA_CLI`, its
+  native intents (`remember …`, `recall`, `triad …`, `help`, `version`) are
+  forwarded to it. Recent `recall` notes are added to the prompt.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -230,9 +232,6 @@ sample streams (`out.h264`, `out.obsr`) in the working directory, next to the
 exe, or up to four folders above it. Copy them alongside the exe to ship it.
 Release builds on Windows use the GUI subsystem, so no console window opens.
 
-Optional: `--features "ui windows"` also builds the Media Foundation camera
-capture code.
-
 ### Run on Linux / macOS
 
 ```bash
@@ -254,29 +253,50 @@ cargo build --release --features ui --bin ui --target x86_64-pc-windows-gnu
 ### Tests
 
 ```bash
-cargo test                         # library (1700+ tests)
-cargo test --features ui --bin ui  # UI, command bus, AI agent (mock provider), headless
+cargo test --lib                       # library
+cargo test --features ui --bin ui      # UI, command bus, AI agent (mock provider), headless
 ```
 
-With `ffmpeg`/`ffprobe` installed, `output::tests` records 5 s to MP4 and checks
-it with ffprobe; with mediamtx at `~/opt/mediamtx/mediamtx` (or `MEDIAMTX`) it
-also streams to a local RTMP server, confirms receipt with ffprobe, kills the
-server and checks the reconnect. With the Seraphina.AGI CLI on PATH
-(`pip install seraphina-agi`), `real_cli_intents_end_to_end` runs
-remember / recall / triad / help / version (and a live `plan-grok` when a key
-is set).
+Tests that need an outside program fail with a message saying what is
+missing; they never pass silently.
 
-With `XAI_API_KEY` set, the same command also runs two live smoke tests:
-* `live_xai_tool_calling_smoke` asks Seraphina to "set Mist Overlay opacity
-  to 55% and switch to Composite" and checks that both commands ran through
-  the bus.
-* `live_xai_smoke_test_if_key_present`.
+* **ffmpeg** (or `SERAPHINA_FFMPEG`) is required by
+  `records_five_seconds_to_mp4_verified_by_ffprobe` (5 s to MP4, checked with
+  ffprobe) and `goes_live_to_an_ffmpeg_rtmp_listener` (goes live to
+  `ffmpeg -listen 1` on 127.0.0.1 and checks the received FLV with ffprobe).
+  `concat_runs_off_thread` (stitches two clips) and
+  `stream_commands_and_status` (records through the command bus) need it too.
+* **mediamtx** at `~/opt/mediamtx/mediamtx` (or `MEDIAMTX`) is required on
+  Linux by `streams_to_local_rtmp_and_reconnects_with_backoff`: it streams to a
+  local RTMP server, confirms receipt under the stream key, kills the server
+  and checks the reconnect. `publishes_to_mediamtx_under_the_callers_key_and_rejects_a_wrong_key`
+  runs mediamtx with only `live/good_key` allowed: the app's real path
+  (`Output::start_live` → ffmpeg) must show up in mediamtx's API as ready
+  with an H.264 track and read back with ffprobe, and `wrong_key` must be
+  refused by the server and reported in the app.
+* `records_audio_from_a_real_pulse_source` creates a PulseAudio null sink,
+  plays a 1234 Hz tone into it with `paplay` and records with Audio =
+  Capture device on its monitor: the MP4's AAC track must last at least 2 s
+  and carry over half its energy at 1234 Hz. `a_missing_audio_device_fails_loudly`
+  checks a nonexistent source stops the recording with an error. Both need
+  ffmpeg; the first also needs a PulseAudio server (`pulseaudio --start`).
+  Each fails, rather than passes, when what it needs is missing.
 
-The billed Grok Imagine test is ignored by default. It makes a 1 s 480p clip
-plus one image:
+On Windows (and under Wine) the ffmpeg and mediamtx tests are reported as
+ignored with the reason. Every other opt-in test is `#[ignore]` with its
+reason in the attribute, and fails if what it needs is missing:
 
 ```bash
-SERAPHINA_LIVE_OUT=/tmp cargo test --features ui --bin ui live_imagine -- --ignored
+# live, billed: need XAI_API_KEY
+cargo test --features ui --bin ui -- --ignored live_xai_tool_calling_smoke
+cargo test --features ui --bin ui -- --ignored live_xai_smoke_test
+SERAPHINA_LIVE_OUT=/tmp cargo test --features ui --bin ui -- --ignored live_imagine
+# live, free (/models): needs XAI_API_KEY
+cargo test --features ui --bin ui -- --ignored live_xai_key_test
+# needs the Seraphina.AGI CLI (pip install seraphina-agi)
+cargo test --features ui --bin ui -- --ignored real_cli_intents_end_to_end chat_routes_memory
+# billed: the CLI's plan-grok, needs the CLI and XAI_API_KEY
+cargo test --features ui --bin ui -- --ignored real_cli_plan_grok
 ```
 
 ### Shortcuts
@@ -287,272 +307,101 @@ Paint: `V M L W C J S B E G O`/`Shift+O` `P T H Z I` tools, `Ctrl+Z` / `Ctrl+Shi
 
 ## CI: Grok PR review
 
-`.github/workflows/grok-review.yml` runs on every pull request. It installs
-the Grok CLI from `https://x.ai/cli/install.sh` and asks it to review the PR
-for bugs. The job has `contents: read` and `pull-requests: write`
-permissions so it can post the review.
+`.github/workflows/grok-review.yml` reviews same-repository pull requests
+from human authors (fork and bot PRs are skipped).
 
-**Required setup:** add the repository secret **`XAI_API_KEY`** under
-GitHub → Settings → Secrets and variables → Actions → New repository
-secret. Without it the review step fails. GitHub does not pass secrets to
-workflows triggered from forks, so pull requests from forks skip the
-authenticated review.
+* It downloads a pinned CLI, `https://x.ai/cli/grok-${GROK_CLI_VERSION}-linux-x86_64`,
+  and checks its SHA-256 before running it. There is no `curl | bash`.
+* The review job has `contents: read` only and gets the diff as a file; the
+  CLI runs without auto-approve and has no GitHub token.
+* A separate `comment` job, the only one with `pull-requests: write`, posts
+  the review. It never sees `XAI_API_KEY`.
 
-## Foundation modules (live)
+**Required setup:** the secret **`XAI_API_KEY`** and the repository variables
+**`GROK_CLI_VERSION`** and **`GROK_CLI_SHA256`** (Settings → Secrets and
+variables → Actions). The job fails closed if any of them is missing.
 
-| Module | What it does | Notes |
-|--------|----------------|-------|
-| **bitstream** | Position trait (wrap vs no-wrap is type-level) | Differential on short reads |
-| **dstr** | Safe dynamic string | Fixes infinite loop + overflow |
-| **utf8** | Safe truncation | Never splits a multibyte character |
-| **diff** | Reusable differential test helper | Wired into modules |
-| **crc32** | Standard CRC32 | Classic test vector |
-| **ai** | AI/SI integration scaffold | Simple config for Grok, Claude, or Seraphina |
-| **array_serializer** | Vec-based output serializer + LE helpers | Differential on short writes |
-| **text_lookup** | HashMap store with escape expansion | Differential on insert/get |
-| **path_extension** | Safe extension extractor | None on null/empty |
-| **bmem** | Alloc size check + alignment contract | 32-byte alignment |
-| **util_uint64** | Exact mul-then-div | 128-bit intermediate, div-zero safe |
-| **util_uint128** | Add / mul64_64 | Native u128 |
-| **deque** | Double-ended queue | Safe circular buffer |
-| **darray** | Dynamic array | Safe Vec wrapper |
-| **config** | Config store | Pure HashMap + defaults |
-| **lexer** | Base-token lexer | Pure &str slices |
-| **serializer** | Serializer trait | Pure memory impl + LE helpers |
-| **profiler** | Local profiler | Pure Instant deltas |
-| **task** | Task queue | Pure Vec of closures |
-| **file_serializer** | File serializer | Pure load/save via std::fs |
-| **buffered_serializer** | Buffered serializer | Pure chunked flush |
-| **cf_lexer** | CF lexer | Pure &str tokens |
-| **config_parser** | Config string parser | Pure ini → Config |
-| **source_profiler** | Source profiler stub | Pure local deltas |
-| **pipe** | In-memory pipe | Pure write/read |
-| **frame_rate** | Frame-rate helpers | Pure rational FPS |
-| **audio_math** | Audio math | Pure mul ↔ dB |
-| **video_fourcc** | Fourcc mapping | Pure u32 → format |
-| **format_conversion** | Format helpers | Pure plane sizes + scalar |
-| **video_matrices** | Color matrices | Pure Kb/Kr + identity |
-| **video_frame** | Video frame | Pure owned planes |
-| **audio_format** | Audio format | Pure size / planar helpers |
-| **video_scaler** | Video scaler | Pure scale size + lerp |
-| **audio_buffer** | Audio buffer | Pure owned planes |
-| **media_timing** | Media timing | Pure ns durations |
-| **audio_mixer** | Audio mixer | Pure gain + sum |
-| **vec2** | 2D vector | Pure add/dot/length |
-| **vec3** | 3D vector | Pure add/dot/cross |
-| **vec4** | 4D vector | Pure add/dot |
-| **matrix3** | 3x4 matrix | Pure identity + mul |
-| **matrix4** | 4x4 matrix | Pure identity + mul |
-| **quat** | Quaternion | Pure mul + normalize |
-| **axisang** | Axis-angle | Pure axis + angle |
-| **plane** | Plane | Pure normal + dist |
-| **bounds** | AABB | Pure min/max + center |
-| **half** | Half-float | Pure f32 <-> f16 |
-| **signal** | Signal handler | Pure connect + emit |
-| **proc** | Procedure handler | Pure add + call |
-| **calldata** | Call data | Pure named params |
-| **decl** | Decl parser | Pure signal/proc strings |
-| **obs_data** | Settings bag | Pure key/value + defaults |
-| **obs_properties** | Properties | Pure bool/int/float/text |
-| **source_context** | Source context | Pure name + settings + handlers |
-| **source_registry** | Source registry | Pure name-to-source map |
-| **output_context** | Output context | Pure name + settings + active |
-| **encoder_context** | Encoder context | Pure name + codec + type |
-| **service_context** | Service context | Pure name + id + settings |
-| **output_registry** | Output registry | Pure name-to-output map |
-| **encoder_registry** | Encoder registry | Pure name-to-encoder map |
-| **service_registry** | Service registry | Pure name-to-service map |
-| **scene_context** | Scene context | Pure ordered item list |
-| **scene_registry** | Scene registry | Pure name-to-scene map |
-| **scene_item** | Scene item | Pure transform + visibility |
-| **filter_context** | Filter context | Pure name + id + settings |
-| **filter_chain** | Filter chain | Pure ordered filter list |
-| **filter_registry** | Filter registry | Pure name-to-filter map |
-| **core** | Core root | Pure owner of all registries |
-| **module** | Module | Pure type registration |
-| **module_registry** | Module registry | Pure name-to-module map |
-| **display_context** | Display | Pure preview / program window |
-| **display_registry** | Display registry | Pure name-to-display map |
-| **hotkey** | Hotkey | Pure name + pressed flag |
-| **hotkey_registry** | Hotkey registry | Pure name-to-hotkey map |
-| **scene_collection** | Scene collection | Pure named set of scenes |
-| **collection_registry** | Collection registry | Pure name-to-collection map |
-| **transition** | Transition | Pure scene switch |
-| **transition_registry** | Transition registry | Pure name-to-transition map |
-| **audio_monitor** | Audio monitor | Pure volume + mute |
-| **monitor_registry** | Monitor registry | Pure name-to-monitor map |
-| **recording** | Recording | Pure start/stop + path |
-| **recording_registry** | Recording registry | Pure name-to-recording map |
-| **streaming** | Streaming | Pure start/stop + service |
-| **streaming_registry** | Streaming registry | Pure name-to-stream map |
-| **replay_buffer** | Replay buffer | Pure duration + save |
-| **replay_registry** | Replay registry | Pure name-to-buffer map |
-| **virtual_cam** | Virtual camera | Pure start/stop |
-| **virtual_cam_registry** | Virtual camera registry | Pure name-to-cam map |
-| **profile** | Profile | Pure name + settings |
-| **profile_registry** | Profile registry | Pure name-to-profile map |
-| **canvas** | Canvas | Pure render surface |
-| **canvas_registry** | Canvas registry | Pure name-to-canvas map |
-| **render_item** | Render item | Pure model matrix from transform |
-| **render_list** | Render list | Pure draw list from a scene |
-| **camera** | Camera | Pure Maya-style view matrix |
-| **projector** | Projector | Pure 2D-to-3D lift |
-| **bone** | Bone | Pure skeleton hierarchy |
-| **animation_timeline** | Animation timeline | Pure keyframe playback |
-| **physics** | Physics settings | Pure gravity/friction/bounce/mass + AI assist |
-| **settings_assist** | Settings assist | Pure AI assist for any ObsData bag |
-| **performance_capture** | Performance capture | Pure actor recording into timeline |
-| **character_renderer** | Character renderer | Pure skeleton walk + AI look |
-| **skeleton_connector** | Skeleton connector | Pure AI bone wiring |
-| **ai_animator** | AI animator | Pure AI-driven keyframe generation |
-| **physics_sim** | Physics simulation | Pure AI-driven step under gravity |
-| **learning_pipeline** | Learning pipeline | Pure physics-governed experience and lessons |
-| **environment** | Environment | Pure world physics governor |
-| **pilot** | Pilot | Pure lesson-driven flight controller |
-| **flight_session** | Flight session | Pure closed-loop altitude trace |
-| **flight_replay** | Flight replay | Pure playback of a recorded trace |
-| **wind** | Wind | Pure environment wind force |
-| **plane_renderer** | Plane renderer | Pure flight-to-skeleton render |
-| **camera_follow** | Camera follow | Pure flight camera tracking |
-| **view_frame** | View frame | Pure camera + bone view matrix |
-| **light** | Light | Pure named light |
-| **light_rig** | Light rig | Pure multi-light collection |
-| **camera_rig** | Camera rig | Pure multi-camera collection |
-| **camera_cut** | Camera cut | Pure timed camera switch |
-| **material** | Material | Pure surface (color, roughness, metallic) |
-| **lighting** | Lighting | Pure material × light evaluation |
-| **material_assign** | Material assign | Pure material-to-bone binding |
-| **shaded_render** | Shaded render | Pure lit skeleton evaluation |
-| **material_registry** | Material registry | Pure named material store |
-| **material_factory** | Material factory | Pure preset material creator |
-| **materials_lab** | Materials lab | Pure atomic binding science lab |
-| **periodic_table** | Periodic table | Pure element lookup by Z or symbol |
-| **compound** | Compound | Pure molecule from atoms |
-| **reaction** | Reaction | Pure reactant-to-product reaction |
-| **audio_channel** | Audio channel | Pure named gain and mute |
-| **audio_bus** | Audio bus | Pure channel mixer |
-| **audio_effect** | Audio effect | Pure gain effect on a channel |
-| **effect_chain** | Effect chain | Pure ordered effect processing |
-| **master_output** | Master output | Pure final mix level |
-| **eq** | EQ | Pure parametric band |
-| **compressor** | Compressor | Pure dynamics reduction |
-| **limiter** | Limiter | Pure peak ceiling |
-| **gate** | Gate | Pure noise gate |
-| **delay** | Delay | Pure echo |
-| **reverb** | Reverb | Pure feedback space |
-| **meter** | Meter | Pure peak and RMS |
-| **audio_timeline** | Audio timeline | Pure multi-track timeline |
-| **video_timeline** | Video timeline | Pure AI video edit and render |
-| **layer_stack** | Layer stack | Pure Photoshop-like layers |
-| **onion_viewer** | Onion viewer | Pure onion-skin edit viewer |
-| **mask** | Mask | Pure layer mask |
-| **editor_ui** | Editor UI | Pure layer / mask / onion panel |
-| **adjustment** | Adjustment | Pure brightness / contrast / hue |
-| **layer_group** | Layer group | Pure layer grouping |
-| **selection** | Selection | Pure marquee |
-| **brush** | Brush | Pure paint brush |
-| **text_layer** | Text layer | Pure text |
-| **transform** | Transform | Pure position, scale, rotation |
-| **curves** | Curves | Pure tone curve |
-| **filter** | Filter | Pure blur, sharpen, grayscale |
-| **smart_object** | Smart object | Pure non-destructive layer |
-| **history** | History | Pure undo / redo |
-| **pixel_canvas** | Pixel canvas | Pure RGB paint buffer |
-| **object3d** | Object 3D | Pure editable 3D object |
-| **smart_skin** | Smart skin | Pure drag-and-drop seamless skin |
-| **ai_editor** | AI editor | Pure AI access across the edit suite |
-| **compositor** | Compositor | Pure video frame compositor |
-| **input_device** | Input device | Pure keyboard and mouse |
-| **output** | Output | Pure frame emit |
-| **audio_output** | Audio output | Pure mix emit |
-| **session** | Session | Pure combined video + audio |
-| **preview** | Preview | Pure session frame viewer |
-| **program** | Program | Pure live output |
-| **live_camera** | Live camera | Pure news camera |
-| **ai_operator** | AI operator | Pure camera, lights, and sound crew |
-| **topic_background** | Topic background | Pure live background from a topic |
-| **performance** | Performance | Pure singer + music video |
-| **show_state** | Show state | Pure off / preview / live |
-| **cue_sheet** | Cue sheet | Pure show rundown |
-| **lower_third** | Lower third | Pure on-screen topic |
-| **keyer** | Keyer | Pure background removal |
-| **ai_director** | AI director | Pure scene picker from speech |
-| **storyboard** | Storyboard | Pure planned story |
-| **speech** | Speech | Pure live speech line |
-| **action** | Action | Pure detected action |
-| **effect** | Effect | Pure scene effect |
-| **effect_list** | Effect list | Pure effect registry |
-| **live_feed** | Live feed | Pure camera jump |
-| **scene_switch** | Scene switch | Pure scene switching |
-| **multi_angle** | Multi angle | Pure angles per camera |
-| **multi_monitor** | Multi monitor | Pure screens with scenes |
-| **options_menu** | Options menu | Pure camera per monitor |
-| **studio** | Studio | Pure program and preview |
-| **studio_transition** | Studio transition | Pure program/preview fade |
-| **multiview** | Multiview | Pure all cameras at once |
-| **tally** | Tally | Pure live indicator |
-| **program_record** | Program record | Pure program capture |
-| **program_stream** | Program stream | Pure program stream |
-| **virtual_camera** | Virtual camera | Pure virtual cam output |
-| **output_bus** | Output bus | Pure fan-out to record, stream, vcam |
-| **frame_clock** | Frame clock | Pure frame timing |
-| **instant_replay** | Instant replay | Pure last-N frames |
-| **replay_save** | Replay save | Pure replay to clip |
-| **export** | Export | Pure clip to file |
-| **file_writer** | File writer | Pure export to bytes |
-| **share** | Share | Pure post to a target |
-| **notify** | Notify | Pure share confirmation |
-| **status** | Status | Pure output state |
-| **keybind** | Keybind | Pure key to action |
-| **help** | Help | Pure key list |
-| **bind_profile** | Bind profile | Pure keybind save and load |
-| **log** | Log | Pure action history |
-| **undo** | Undo | Pure reverse action |
-| **redo** | Redo | Pure re-apply action |
-| **macro_seq** | Macro | Pure key sequence |
-| **schedule** | Schedule | Pure timed macro |
-| **nal_parser** | NAL parser | Pure AVC/HEVC NAL split |
-| **output_delay** | Output delay | Pure frame delay buffer |
-| **deinterlace** | Deinterlace | Pure field weave |
-| **missing_files** | Missing files | Pure missing file list |
-| **fingerprint** | Fingerprint | Pure file identity for rebuild |
-| **file_cache** | File cache | Pure byte store for rebuild |
-| **color_filter** | Color filter | Pure brightness, contrast, saturation |
-| **crop_filter** | Crop filter | Pure region crop |
-| **scale_filter** | Scale filter | Pure nearest-neighbor scale |
-| **noise_filter** | Noise filter | Pure deterministic noise |
-| **gain_filter** | Gain filter | Pure audio gain |
-| **compressor_filter** | Compressor | Pure audio compressor |
-| **limiter_filter** | Limiter | Pure audio limiter |
-| **gate_filter** | Gate | Pure audio gate |
-| **eq_filter** | EQ | Pure three-band equalizer |
-| **reverb_filter** | Reverb | Pure delay reverb |
-| **fade_transition** | Fade transition | Pure crossfade |
-| **swipe_transition** | Swipe transition | Pure wipe |
-| **slide_transition** | Slide transition | Pure slide |
-| **cut_transition** | Cut transition | Pure hard cut |
-| **image_source** | Image source | Pure static image |
-| **text_source** | Text source | Pure text overlay |
-| **color_source** | Color source | Pure solid color |
-| **browser_source** | Browser source | Pure URL holder |
-| **media_source** | Media source | Pure file path holder |
-| **window_capture** | Window capture | Pure window title holder |
-| **display_capture** | Display capture | Pure monitor holder |
-| **game_capture** | Game capture | Pure game title holder |
-| **audio_input** | Audio input | Pure microphone holder |
-| **audio_output_source** | Audio output | Pure desktop audio holder |
-| **group_source** | Group source | Pure source group |
-| **organization** | Organization | Pure team with individual profiles |
-| **invite** | Invite | Pure team invite |
-| **role** | Role | Pure role list |
-| **permission** | Permission | Pure role action |
-| **session** | Session | Pure signed-in member |
-| **audit** | Audit | Pure who-did-what |
-| **presence** | Presence | Pure online members |
-| **assignment** | Assignment | Pure resource claim |
-| **replay_buffer** | Replay buffer | Pure last-N frames |
+## Library modules
 
-All have unit tests. C ABI shims keep original quirks where required.
+Every module below is reached from the app (`src/bin/ui/`) or an example
+and has unit tests. Two tests hold this list to the code:
+`readme_lists_every_library_module` (the list equals the `pub mod` set in
+`src/lib.rs`) and `every_library_module_is_reached_from_a_binary_or_example`
+(walks from the non-test code of `src/bin/` and `examples/`).
+
+<!-- modules:begin -->
+- `arena`: Physics Arena: rigid bodies under real environmental conditions.
+- `assistant`: Chat types and the offline help table the Seraphina panel uses when no model is configured (it says so; no model call, no actions).
+- `bitstream`: Perfect port of OBS bitstream_reader.
+- `chem`: Chemistry: thermochemistry and kinetics of real reactions.
+- `circuit`: Circuits: modified nodal analysis (MNA) with device models and electro-thermal coupling.
+- `computer`: Build a computer: transistors → gates → adder → register → CPU.
+- `element_data`: Physical data for all 118 elements, plus their place in the standard 18-column periodic table.
+- `element_props`: Extended per-element properties (embedded; never fetched at runtime).
+- `joint`: Safe pure Joint (skeleton joint tool).
+- `joint_hierarchy`: Safe pure JointHierarchy (named joint tree core).
+- `live_weights`: Safe pure LiveWeights (runtime parameter store).
+- `material`: Safe pure Material (surface core).
+- `material_assign`: Safe pure MaterialAssign (material-to-bone core).
+- `material_env`: "Env metadata": the physical behaviour a simulation needs for an element
+- `material_pbr`: Composition → render (PBR) and simulation properties.
+- `material_registry`: Safe pure MaterialRegistry (named material store).
+- `materials_lab`: Safe pure MaterialsLab (materials science core).
+- `mesh3d`: Polygon meshes for the 3D workspace.
+- `paint_engine`: Paint engine behind Seraphina Studio's Paint mode.
+- `periodic_table`: Safe pure PeriodicTable (element lookup core).
+- `psd`: Safe pure Psd (Photoshop Document).
+- `psd_pixels`: Layered PSD with real pixel data (8-bit RGB, version 1).
+- `reconnect`: Safe pure Reconnect (OBS obs-output.c reconnect).
+- `relativity`: Relativity: special-relativistic kinematics, Newtonian N-body gravity with a 1PN correction, GPS and light bending.
+- `serde_static`: Serde helpers for `&'static str` fields (material notes, element symbols, preset keys).
+- `sim_worker`: Run a simulation on its own thread and let the UI read snapshots (A8).
+- `stream_inspect`: Safe pure StreamInspect (step-through view of bitstream::Reader).
+- `tile_undo`: Tile-based undo: store only the 256×256 tiles that changed.
+- `ui_canvas`: RGBA raster, layers, brush and selection model behind Paint and Animate.
+- `vec3`: Vec3: three floats. The materials use it as a linear RGB colour.
+<!-- modules:end -->
+
+### Planned (not built)
+
+Dates are targets, not promises, in America/Edmonton time. Milestones
+come from the fix plan: M4b is the rest of M4 after M4a; M5 is repo and
+release; M6 is physics; M7+ is one mode per milestone. Work after the
+v0.2.0 release has no date yet and says "after v0.2.0". Planned items
+stay out of the code until a real implementation lands with tests.
+
+| Milestone | Target |
+|-----------|--------|
+| v1 cleanup and M4 part 2 (M4b) | Wed Oct 28, 2026 (target) |
+| First green CI run, with the CI steps run locally | Sun Nov 1, 2026 (target). The GitHub Actions run happens whenever the organisation's billing lock lifts; it does not unlock automatically |
+| v0.2.0 release | Fri Nov 6, 2026 (target, pending the owner's approval) |
+
+| Item | Target |
+|------|--------|
+| Seraphina.AGI integration: the app talks to Seraphina.AGI as a separate local process. Today the provider is Grok (xAI) through `src/bin/ui/llm.rs`; the only link now is the optional CLI bridge for memory intents | after v0.2.0 (proposed; not yet in the fix plan) |
+| Seraphina drives every mode, one learning system, chat saved with the project (C1, C4, C5/C6) | M4b: Wed Oct 28, 2026 (target) |
+| Remove `dist/` binaries and root clutter (G5–G7) | after v0.2.0 (M5) |
+| 64-bit physics, rotating bodies, contact graph (F1–F3) | after v0.2.0 (M6) |
+| Scenes and sources: window, game, browser, media, image, text and group sources; webcam capture (Media Foundation, AVFoundation, V4L2); the OBS source/scene/filter/encoder/service registries, transitions, hotkeys, profiles, replay buffer, virtual camera, studio mode; a frame pipe and per-source profiler; NVENC/QSV/AMF (E6) | after v0.2.0 (M7+, Stream) |
+| A Composite effects library: levels, tone curves, hue/saturation, colour balance, drop shadow, inner glow, blur, sharpen, posterize, threshold, crossfade (the old unused modules are deleted; the app's own filters live in `src/bin/ui/`) (E3) | after v0.2.0 (M7+, Composite) |
+| Microphone capture verified on real hardware on Windows (dshow) | after v0.2.0 (needs a run on a Windows PC with a microphone) |
+| Team features (organisation, invite, roles, presence) | after v0.2.0 |
+
+Removed and not planned, because the app already does the real thing:
+
+* A library-level RTMP client (`rtmp_socket` and the `rtmp_*`/`shell_*`
+  modules). It never read the server's replies and reported success
+  while the server dropped the connection. The app streams through
+  ffmpeg (`src/bin/ui/output.rs`).
+* Synthetic capture, camera and audio sources and the demo binaries that
+  used them (`run`, `ai_write`, `slice`, `raw_read`). None shipped; the
+  synthetic audio was labelled "live".
+* AI helpers in the library (`ai`, `ai_tools`, `ai_editor`,
+  `ai_director`, `settings_assist`, …) that echoed the prompt. The app's
+  model client is `src/bin/ui/llm.rs`.
+* Library copies of menus, toolbars, tool routers and status widgets
+  (`ps_*`, `maya_shelves`, `tool_*`, `*_status`, …). The app has its own
+  in `src/bin/ui/`.
 
 ## Parser
 
@@ -560,90 +409,26 @@ All have unit tests. C ABI shims keep original quirks where required.
 Rust skeletons that already document the learned fixes. Add new lessons
 as you discover more quirks — the next parse gets smarter automatically.
 
-## Status
-
-- [x] Two hundred forty-eight foundation modules with tests
-- [x] Util foundation complete (high-leverage pure surface covered)
-- [x] Media-io pure layer solid (frame-rate through audio-mixer)
-- [x] Graphics pure layer solid (vec2 through half)
-- [x] Callback pure layer solid (signal, proc, calldata, decl)
-- [ ] Data pure layer started (obs_data, obs_properties)
-- [x] Source pure layer: context + registry complete for source, output, encoder, service
-- [x] Scene pure layer: context, registry, items, collection + registry
-- [x] Filter pure layer: context + chain + registry complete
-- [x] Core root owns all registries including modules, displays, hotkeys, collections, transitions, monitors, recordings, streams, replays, virtual cams, profiles, and canvases
-- [x] Module registration + registry complete
-- [x] Display pure layer: context + registry complete
-- [x] Hotkey pure layer: hotkey + registry complete
-- [x] Transition pure layer: transition + registry complete
-- [x] Audio monitor pure layer: monitor + registry complete
-- [x] Recording pure layer: recording + registry complete
-- [x] Streaming pure layer: streaming + registry complete
-- [x] Replay buffer pure layer: buffer + registry complete
-- [x] Virtual camera pure layer: cam + registry complete
-- [x] Profile pure layer: profile + registry complete
-- [x] Canvas pure layer: canvas + registry complete
-- [ ] Render pure layer started (render_item, render_list, camera, projector, bone, animation_timeline, performance_capture, character_renderer, skeleton_connector, ai_animator, physics_sim, learning_pipeline, environment, pilot, flight_session, flight_replay, wind, plane_renderer, camera_follow, view_frame, light, light_rig, camera_rig, camera_cut, material, lighting, material_assign, shaded_render, material_registry, material_factory, materials_lab, periodic_table, compound, reaction)
-- [ ] Video pure layer started (video_timeline, layer_stack, onion_viewer, mask, editor_ui, adjustment, layer_group, selection, brush, text_layer, transform, curves, filter, smart_object, history, pixel_canvas, object3d, smart_skin, ai_editor, compositor)
-- [ ] Input pure layer started (input_device)
-- [ ] Output pure layer started (output, audio_output, session, preview, program)
-- [x] Differential helper wired into modules
-- [x] AI integration scaffold (swap backends with one variable)
-- [x] Parser tools wired
-- [x] CI (cargo test on push/PR)
-- [x] Public under SynerGro-AI
-- [ ] Batch application to remaining util files
-- [ ] Live HTTP client in AI scaffold
-- [ ] Workspace layout
-
 ## Layout
 
 ```
-src/
-  lib.rs
-  bitstream.rs
-  dstr.rs
-  utf8.rs
-  diff.rs
-  crc32.rs
-  ai.rs
-  array_serializer.rs
-  text_lookup.rs
-  path_extension.rs
-  bmem.rs
-tools/
-  obs_cpp_to_rust_parser.py
-.github/workflows/ci.yml
-PLAN.md
+src/lib.rs        library modules (listed above)
+src/bin/ui/       Seraphina Studio (the desktop app)
+examples/         numeric checks for the arena, chemistry, CPU, relativity
+tools/            the OBS C-to-Rust parser and the element-data generator
 ```
 
 ## Usage
 
 ```bash
-cargo test
+cargo test --lib
+cargo test --features ui --bin ui
 ```
 
-## AI integration
+## Roadmap
 
-Simple variable adjustment:
-
-```rust
-use obs_rust_bitstream::ai::{AiAssistant, AiConfig};
-
-let ai = AiAssistant::new(AiConfig::default());          // Grok
-// let ai = AiAssistant::new(AiConfig::claude());       // Claude
-// let ai = AiAssistant::new(AiConfig::seraphina());    // Seraphina
-let review = ai.review_skeleton("/* generated rust */");
-```
-
-## Foundational plan
-
-1. Foundation patterns first — done
-2. Parser wired — done
-3. High-leverage modules + differential helper — done
-4. AI scaffold for automated help — done
-5. Batch-apply to the rest
-6. Keep pushing — public, free, open
+See "Planned (not built)" above for the target dates (America/Edmonton)
+and what comes after v0.2.0.
 
 AI-assisted contributions and PRs welcome.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to start.
@@ -654,43 +439,13 @@ See also the upstream [obs-rust/obs-studio](https://github.com/obs-rust/obs-stud
 
 GPL-2.0-or-later (matching OBS Studio).
 
-## Trial download
+## Prebuilt binaries in `dist/`
 
-A prebuilt Linux binary is in `dist/obs-rust`.
-
-```bash
-git clone https://github.com/SynerGro-AI/obs-rust-bitstream.git
-cd obs-rust-bitstream
-chmod +x dist/obs-rust
-./dist/obs-rust
-```
-
-It prints the shell status, platform targets, and a 💭 instruction for the active tool.
-
-To build from source (any OS):
-
-```bash
-cargo build --release --bin run
-./target/release/run
-```
-
-## Help
-
-When a tool is selected, a 💭 thought explains how to use it.
-When an option is selected, a 💭 thought explains that option.
-Press ? to see every bound key.
-
-Optional CC0 audio:
-
-```bash
-curl -L -o /tmp/bell1.wav \
-  https://raw.githubusercontent.com/code4fukui/sound-cc0/main/bell1.wav
-```
-
-Outputs: `out.avbn`, `status.txt`, `report.txt`, `stamped.avbn`.
+`dist/obs-rust` and `dist/obs-rust-ui` are stale builds of an earlier
+terminal demo and an older UI. They do not match this source; build from
+source instead (see above). They are removed in M5 (G5), after v0.2.0.
 
 ## Windows release
 
 See [Desktop app: Seraphina Studio](#desktop-app-seraphina-studio) above.
-Note: `dist/obs-rust-ui` is a stale Linux prebuilt of an older “Tuxedo Edit” UI revision. It does not match the current source; rebuild instead.
 

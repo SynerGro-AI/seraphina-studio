@@ -326,7 +326,7 @@ pub fn blend_into(base: &mut Raster, top: &Raster, mode: BlendMode, opacity: f32
         .as_chunks_mut::<4>()
         .0
         .iter_mut()
-        .zip(top.data.chunks_exact(4))
+        .zip(top.data.as_chunks::<4>().0)
     {
         let a = (t[3] as f32 / 255.0) * op;
         if a <= 0.0 {
@@ -412,10 +412,9 @@ impl Brush {
                     px[3] = ((a * (1.0 - cov)) * 255.0).round() as u8;
                 } else {
                     let out_a = cov + a * (1.0 - cov);
-                    for c in 0..3 {
-                        let v = (self.color[c] as f32 * cov + px[c] as f32 * a * (1.0 - cov))
-                            / out_a.max(1e-6);
-                        px[c] = v.round().clamp(0.0, 255.0) as u8;
+                    for (p, &sc) in px.iter_mut().zip(&self.color).take(3) {
+                        let v = (sc as f32 * cov + *p as f32 * a * (1.0 - cov)) / out_a.max(1e-6);
+                        *p = v.round().clamp(0.0, 255.0) as u8;
                     }
                     px[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
                 }
@@ -586,13 +585,16 @@ pub fn format_clock(secs: u64) -> String {
 pub fn save_target(path: &str) -> String {
     let p = std::path::Path::new(path);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("untitled");
-    let parent = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
     let name = if stem.ends_with("_edit") {
         format!("{}.psd", stem)
     } else {
         format!("{}_edit.psd", stem)
     };
-    parent.join(name).to_string_lossy().into_owned()
+    // Keep the caller's directory text as-is so the separator style is
+    // unchanged (Path::join would insert `\` on Windows).
+    let file = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let dir = path.strip_suffix(file).unwrap_or("");
+    format!("{dir}{name}")
 }
 
 /// Animated scalar: keys sorted by time, linear interpolation,
@@ -966,6 +968,7 @@ mod tests {
             "assets/mountain_spire_edit.psd"
         );
         assert_eq!(save_target("photo.jpg"), "photo_edit.psd");
+        assert_eq!(save_target(r"C:\art\photo.jpg"), r"C:\art\photo_edit.psd");
     }
 
     #[test]

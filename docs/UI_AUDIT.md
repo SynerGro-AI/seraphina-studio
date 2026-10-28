@@ -26,6 +26,12 @@ This is a Rust library crate of about 644 files and about 61.6k lines. It contai
 
 Windows exe: `/workspace/obs-rust-bitstream/target/x86_64-pc-windows-gnu/release/ui.exe` (about 19.3 MB). I did **not** execute it, because the box has no Windows and no Wine.
 
+> **Update (v1 cleanup, 2026-10-24):** this is no longer true. The Windows
+> build now runs under Wine on the box (lib and ui tests, plus a launch
+> smoke test with a screenshot), and CI's `windows-ui` job runs the lib
+> and ui tests on `windows-latest`. `src/windows_capture.rs` (R2) and the
+> `windows` feature were later deleted as unused.
+
 ## 4. Repo-level findings
 
 | ID | Severity | Location | Finding | Fix |

@@ -677,10 +677,9 @@ pub fn paint_dab(
                 px[3] = ((a * (1.0 - cov)) * 255.0).round() as u8;
             } else {
                 let out_a = cov + a * (1.0 - cov);
-                for c in 0..3 {
-                    let v = (b.color[c] as f32 * cov + px[c] as f32 * a * (1.0 - cov))
-                        / out_a.max(1e-6);
-                    px[c] = v.round().clamp(0.0, 255.0) as u8;
+                for (p, &bc) in px.iter_mut().zip(&b.color).take(3) {
+                    let v = (bc as f32 * cov + *p as f32 * a * (1.0 - cov)) / out_a.max(1e-6);
+                    *p = v.round().clamp(0.0, 255.0) as u8;
                 }
                 px[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
             }
@@ -765,9 +764,9 @@ fn sample(src: &Raster, x: i64, y: i64) -> Option<[f32; 4]> {
 
 fn mix_px(r: &mut Raster, x: u32, y: u32, c: [f32; 4], cov: f32) {
     let i = ((y as usize) * (r.width as usize) + x as usize) * 4;
-    for k in 0..4 {
+    for (k, &ck) in c.iter().enumerate().take(4) {
         let v = r.data[i + k] as f32;
-        r.data[i + k] = (v + (c[k] - v) * cov).round().clamp(0.0, 255.0) as u8;
+        r.data[i + k] = (v + (ck - v) * cov).round().clamp(0.0, 255.0) as u8;
     }
 }
 
@@ -898,8 +897,8 @@ pub fn gradient_fill(
             let i = ((y as usize) * (r.width as usize) + x as usize) * 4;
             let ba = r.data[i + 3] as f32 / 255.0;
             let out_a = ga + ba * (1.0 - ga);
-            for k in 0..3 {
-                let v = (col[k] * ga + r.data[i + k] as f32 * ba * (1.0 - ga)) / out_a.max(1e-6);
+            for (k, &ck) in col.iter().enumerate().take(3) {
+                let v = (ck * ga + r.data[i + k] as f32 * ba * (1.0 - ga)) / out_a.max(1e-6);
                 r.data[i + k] = v.round().clamp(0.0, 255.0) as u8;
             }
             r.data[i + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;

@@ -158,16 +158,22 @@ impl AnimState {
         )
     }
 
-    pub fn undo(&mut self) {
-        if let Some(prev) = self.history.undo(self.frames.clone()) {
-            self.restore(prev);
-        }
+    /// False when there is nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        let Some(prev) = self.history.undo(self.frames.clone()) else {
+            return false;
+        };
+        self.restore(prev);
+        true
     }
 
-    pub fn redo(&mut self) {
-        if let Some(next) = self.history.redo(self.frames.clone()) {
-            self.restore(next);
-        }
+    /// False when there is nothing to redo.
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.history.redo(self.frames.clone()) else {
+            return false;
+        };
+        self.restore(next);
+        true
     }
 
     pub fn can_undo(&self) -> bool {

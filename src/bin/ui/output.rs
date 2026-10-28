@@ -332,7 +332,41 @@ pub fn screen_grab(ffmpeg: &Path) -> Grab {
 }
 
 /// Full ffmpeg argument list for a session.
-pub fn build_args(cfg: &OutputConfig, kind: Kind, target: &str, grab: Grab) -> Vec<String> {
+/// Which capture API "Capture device" audio goes through on this OS.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AudioBackend {
+    /// Linux: PulseAudio (or PipeWire's pulse server); empty name = `default`.
+    Pulse,
+    /// Windows: DirectShow; there is no default device, a name is required.
+    DirectShow,
+    /// macOS and others: not implemented; refused with a clear error.
+    Unsupported,
+}
+
+impl AudioBackend {
+    pub fn host() -> Self {
+        if cfg!(windows) {
+            AudioBackend::DirectShow
+        } else if cfg!(target_os = "linux") {
+            AudioBackend::Pulse
+        } else {
+            AudioBackend::Unsupported
+        }
+    }
+}
+
+/// ffmpeg arguments for one session. Errors when the audio settings can't
+/// work (no DirectShow device named, or an OS without capture support):
+/// the app never swaps in a synthetic or silent track. A device that exists
+/// by name but can't be opened makes ffmpeg exit, which surfaces as an
+/// error toast.
+pub fn build_args(
+    cfg: &OutputConfig,
+    kind: Kind,
+    target: &str,
+    grab: Grab,
+    backend: AudioBackend,
+) -> Result<Vec<String>, String> {
     let (w, h) = cfg.size();
     let fps = cfg.fps.clamp(1, 120);
     let mut a: Vec<String> = [
@@ -349,6 +383,12 @@ pub fn build_args(cfg: &OutputConfig, kind: Kind, target: &str, grab: Grab) -> V
     let mut push = |xs: &[&str]| a.extend(xs.iter().map(|s| s.to_string()));
     match cfg.source {
         Source::Canvas => {
+            if cfg.audio == Audio::Device {
+                // A capture device stamps audio with wall-clock time; stamp the
+                // piped frames the same way, or ffmpeg can't line the two up
+                // and the file stops after a fraction of a second.
+                push(&["-use_wallclock_as_timestamps", "1"]);
+            }
             push(&[
                 "-f",
                 "rawvideo",
@@ -403,10 +443,15 @@ pub fn build_args(cfg: &OutputConfig, kind: Kind, target: &str, grab: Grab) -> V
             "-i",
             "anullsrc=channel_layout=stereo:sample_rate=48000",
         ]),
-        Audio::Device => {
-            if cfg!(windows) {
-                push(&["-f", "dshow", "-i", &format!("audio={}", cfg.audio_device)]);
-            } else {
+        Audio::Device => match backend {
+            AudioBackend::DirectShow => {
+                let dev = cfg.audio_device.trim();
+                if dev.is_empty() {
+                    return Err("Audio is set to Capture device but no DirectShow device is named. Enter it in Settings ▸ Output (e.g. \"Microphone (Realtek Audio)\"; `ffmpeg -list_devices true -f dshow -i dummy` lists them), or pick Silent AAC track / No audio.".into());
+                }
+                push(&["-f", "dshow", "-i", &format!("audio={dev}")]);
+            }
+            AudioBackend::Pulse => {
                 let dev = if cfg.audio_device.trim().is_empty() {
                     "default"
                 } else {
@@ -414,7 +459,10 @@ pub fn build_args(cfg: &OutputConfig, kind: Kind, target: &str, grab: Grab) -> V
                 };
                 push(&["-f", "pulse", "-i", dev]);
             }
-        }
+            AudioBackend::Unsupported => {
+                return Err("Capture-device audio isn't supported on this OS yet (Windows and Linux only). Pick Silent AAC track or No audio in Settings ▸ Output.".into());
+            }
+        },
     }
     push(&["-map", "0:v"]);
     if has_audio {
@@ -465,7 +513,7 @@ pub fn build_args(cfg: &OutputConfig, kind: Kind, target: &str, grab: Grab) -> V
         Kind::Record => push(&["-movflags", "+faststart", "-f", "mp4", "-y", target]),
         Kind::Live => push(&["-f", "flv", target]),
     }
-    a
+    Ok(a)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -603,13 +651,14 @@ impl Session {
         target: &str,
         secret: &str,
         frames: FrameSlot,
+        backend: AudioBackend,
     ) -> Result<Session, String> {
         let grab = if cfg.source == Source::Screen {
             screen_grab(ffmpeg)
         } else {
             Grab::X11
         };
-        let args = build_args(cfg, kind, target, grab);
+        let args = build_args(cfg, kind, target, grab, backend)?;
         let mut cmd = Command::new(ffmpeg);
         cmd.args(&args)
             .stdin(Stdio::piped())
@@ -838,6 +887,8 @@ pub struct Output {
     pub key_edit: String,
     /// Where the saved key lives (looked up lazily for Settings).
     key_place: Option<crate::secrets::Where>,
+    /// Capture API for "Capture device" audio; `AudioBackend::host()`.
+    pub audio_backend: AudioBackend,
 }
 
 impl Output {
@@ -864,6 +915,7 @@ impl Output {
             reveal_key: false,
             key_edit: String::new(),
             key_place: None,
+            audio_backend: AudioBackend::host(),
         }
     }
 
@@ -1003,6 +1055,7 @@ impl Output {
             &path.to_string_lossy(),
             "",
             self.frames.clone(),
+            self.audio_backend,
         )?;
         self.rec = Some(s);
         self.rec_error = None;
@@ -1050,6 +1103,7 @@ impl Output {
             &target,
             &self.key,
             self.frames.clone(),
+            self.audio_backend,
         )?;
         self.live = Some(s);
         Ok(())
@@ -1580,23 +1634,15 @@ impl Output {
                     });
                 ui.end_row();
                 if self.cfg.audio == Audio::Device {
-                    ui.label(theme::muted(
-                        p,
-                        if cfg!(windows) {
-                            "DirectShow device"
-                        } else {
-                            "Pulse source"
-                        },
-                    ));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.cfg.audio_device).hint_text(
-                            if cfg!(windows) {
-                                "Microphone (Realtek Audio)"
-                            } else {
-                                "default"
-                            },
-                        ),
-                    );
+                    let (label, hint) = match self.audio_backend {
+                        AudioBackend::DirectShow => {
+                            ("DirectShow device", "Microphone (Realtek Audio)")
+                        }
+                        AudioBackend::Pulse => ("Pulse source", "default"),
+                        AudioBackend::Unsupported => ("Not supported on this OS", ""),
+                    };
+                    ui.label(theme::muted(p, label));
+                    ui.add(egui::TextEdit::singleline(&mut self.cfg.audio_device).hint_text(hint));
                     ui.end_row();
                 }
                 ui.label(theme::muted(p, "Record folder"));
@@ -1660,7 +1706,15 @@ mod tests {
             height: 359,
             ..Default::default()
         };
-        let a = build_args(&c, Kind::Record, "/tmp/x.mp4", Grab::X11).join(" ");
+        let a = build_args(
+            &c,
+            Kind::Record,
+            "/tmp/x.mp4",
+            Grab::X11,
+            AudioBackend::Pulse,
+        )
+        .expect("args")
+        .join(" ");
         assert!(
             a.contains("-f rawvideo -pix_fmt rgba -s 640x358 -framerate 30 -i pipe:0"),
             "{}",
@@ -1676,10 +1730,26 @@ mod tests {
         );
         c.audio = Audio::None;
         c.source = Source::Screen;
-        let a = build_args(&c, Kind::Live, "rtmp://h/app/k", Grab::Gdigrab).join(" ");
+        let a = build_args(
+            &c,
+            Kind::Live,
+            "rtmp://h/app/k",
+            Grab::Gdigrab,
+            AudioBackend::DirectShow,
+        )
+        .expect("args")
+        .join(" ");
         assert!(a.contains("-f gdigrab -framerate 30 -draw_mouse 1 -i desktop"));
         assert!(!a.contains("hwdownload"));
-        let a = build_args(&c, Kind::Live, "rtmp://h/app/k", Grab::X11).join(" ");
+        let a = build_args(
+            &c,
+            Kind::Live,
+            "rtmp://h/app/k",
+            Grab::X11,
+            AudioBackend::Pulse,
+        )
+        .expect("args")
+        .join(" ");
         assert!(a.contains("-f x11grab"));
         assert!(!a.contains("-c:a") && !a.contains("1:a") && a.contains("scale=640:358"));
         assert!(a.ends_with("-f flv rtmp://h/app/k"));
@@ -1712,7 +1782,15 @@ mod tests {
             fps: 60,
             ..Default::default()
         };
-        let a = build_args(&c, Kind::Record, "o.mp4", Grab::Ddagrab).join(" ");
+        let a = build_args(
+            &c,
+            Kind::Record,
+            "o.mp4",
+            Grab::Ddagrab,
+            AudioBackend::DirectShow,
+        )
+        .expect("args")
+        .join(" ");
         assert!(
             a.contains("-f lavfi -i ddagrab=output_idx=0:framerate=60:draw_mouse=1"),
             "{}",
@@ -1829,11 +1907,9 @@ mod tests {
     /// Records 5 s from the frame pipe and verifies the file with ffprobe.
     /// Set `RECORD_TEST_OUT` to keep a copy of the MP4.
     #[test]
+    #[cfg_attr(windows, ignore = "the Windows runners and Wine have no ffmpeg.exe")]
     fn records_five_seconds_to_mp4_verified_by_ffprobe() {
-        let Ok(ff) = find_ffmpeg() else {
-            eprintln!("skipped: ffmpeg not installed");
-            return;
-        };
+        let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
         let cfg = OutputConfig {
             width: 640,
             height: 360,
@@ -1877,6 +1953,101 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Goes live against `ffmpeg -listen 1` acting as the RTMP server: the
+    /// listener writes what it receives to an FLV, which ffprobe must read
+    /// back as H.264 at the configured size. Needs only ffmpeg; no network
+    /// beyond 127.0.0.1.
+    #[test]
+    #[cfg_attr(windows, ignore = "the Windows runners and Wine have no ffmpeg.exe")]
+    fn goes_live_to_an_ffmpeg_rtmp_listener() {
+        let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a free port");
+            l.local_addr().expect("local addr").port()
+        };
+        let got =
+            std::env::temp_dir().join(format!("seraphina_rtmp_rx_{}.flv", std::process::id()));
+        let _ = std::fs::remove_file(&got);
+        let mut server = Command::new(&ff)
+            .args(["-hide_banner", "-loglevel", "error", "-listen", "1", "-i"])
+            .arg(format!("rtmp://127.0.0.1:{port}/live/rx_test_key"))
+            .args(["-c", "copy", "-y"])
+            .arg(&got)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the ffmpeg RTMP listener");
+        // Wait until the one-shot listener is bound. Connecting to check
+        // would use up its only accept, so read the socket table instead.
+        let hex = format!(":{port:04X} ");
+        let t0 = Instant::now();
+        loop {
+            match std::fs::read_to_string("/proc/net/tcp") {
+                Ok(t) if t.lines().any(|l| l.contains(&hex) && l.contains(" 0A ")) => break,
+                Ok(_) => {}
+                Err(_) => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    break;
+                }
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "listener never came up"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let cfg = OutputConfig {
+            rtmp_url: format!("rtmp://127.0.0.1:{port}/live"),
+            width: 320,
+            height: 180,
+            fps: 30,
+            video_kbps: 600,
+            ..Default::default()
+        };
+        let mut o = Output::new(cfg, String::new());
+        o.set_key("rx_test_key", false).expect("set key");
+        o.push_frame(moving_frame(0));
+        o.start_live().expect("start live");
+        let mut ev = Vec::new();
+        let t0 = Instant::now();
+        let mut i = 0;
+        while t0.elapsed() < Duration::from_secs(3) {
+            o.push_frame(moving_frame(i));
+            i += 1;
+            ev.extend(o.tick());
+            std::thread::sleep(Duration::from_millis(33));
+        }
+        assert!(o.is_live(), "dropped: {:?}", ev);
+        o.stop_live().expect("stop live");
+        let t0 = Instant::now();
+        let status = loop {
+            if let Some(st) = server.try_wait().expect("listener status") {
+                break st;
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "listener did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let mut err = String::new();
+        if let Some(mut e) = server.stderr.take() {
+            use std::io::Read;
+            let _ = e.read_to_string(&mut err);
+        }
+        assert!(status.success(), "listener failed: {err}");
+        let p = probe(&ff, &got.to_string_lossy()).expect("ffprobe");
+        assert!(
+            p.contains("codec_name=h264") && p.contains("width=320") && p.contains("height=180"),
+            "listener did not receive the stream: {p}"
+        );
+        assert!(
+            ev.iter().all(|(_, m)| !m.contains("rx_test_key")),
+            "key leaked into a message"
+        );
+        let _ = std::fs::remove_file(&got);
+    }
+
     fn mediamtx_bin() -> Option<PathBuf> {
         let c = std::env::var_os("MEDIAMTX")
             .map(PathBuf::from)
@@ -1887,29 +2058,171 @@ mod tests {
     }
 
     fn start_mediamtx(bin: &Path, port: u16) -> Child {
-        let dir = std::env::temp_dir().join(format!("mtx_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let c = spawn_mediamtx(
+            bin,
+            "reconnect",
+            &format!("rtmp: yes\nrtmpAddress: 127.0.0.1:{port}\napi: no\npaths:\n  all_others:\n"),
+        );
+        std::thread::sleep(Duration::from_millis(800));
+        c
+    }
+
+    /// mediamtx with only the given settings on top of a quiet base config
+    /// (no RTSP/HLS/WebRTC/SRT). `tag` keeps parallel tests' configs apart.
+    fn spawn_mediamtx(bin: &Path, tag: &str, settings: &str) -> Child {
+        let dir = std::env::temp_dir().join(format!("mtx_{}_{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mediamtx config dir");
         let yml = dir.join("mediamtx.yml");
-        std::fs::write(&yml, format!("logLevel: warn\napi: no\nmetrics: no\npprof: no\nplayback: no\nrtsp: no\nhls: no\nwebrtc: no\nsrt: no\nrtmp: yes\nrtmpAddress: 127.0.0.1:{}\npaths:\n  all_others:\n", port)).unwrap();
-        let c = Command::new(bin)
+        std::fs::write(&yml, format!("logLevel: warn\nmetrics: no\npprof: no\nplayback: no\nrtsp: no\nhls: no\nwebrtc: no\nsrt: no\n{settings}")).expect("write mediamtx.yml");
+        Command::new(bin)
             .arg(&yml)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(800));
-        c
+            .expect("spawn mediamtx")
+    }
+
+    fn free_port() -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a free port");
+        l.local_addr().expect("local addr").port()
+    }
+
+    /// GET from the mediamtx control API: Ok(body) on 2xx, Err(status) else.
+    fn mtx_api(api: u16, path: &str) -> Result<String, u16> {
+        match ureq::get(&format!("http://127.0.0.1:{api}{path}"))
+            .timeout(Duration::from_secs(2))
+            .call()
+        {
+            Ok(r) => r.into_string().map_err(|_| 0),
+            Err(ureq::Error::Status(c, _)) => Err(c),
+            Err(_) => Err(0),
+        }
+    }
+
+    /// The app's real streaming path (Output::start_live → ffmpeg → RTMP)
+    /// publishes to mediamtx under the caller's stream key, and a wrong key
+    /// is rejected. mediamtx accepts only `live/good_key`; its control API
+    /// must report that path ready with an H.264 track and bytes received,
+    /// and ffprobe must read the stream back. Publishing with `wrong_key`
+    /// must be refused by the server and surface as an error in the app.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "mediamtx is installed on the Linux runner only"
+    )]
+    fn publishes_to_mediamtx_under_the_callers_key_and_rejects_a_wrong_key() {
+        let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
+        let mtx = mediamtx_bin()
+            .expect("mediamtx not found: set MEDIAMTX or install it at ~/opt/mediamtx/mediamtx");
+        let (rtmp, api) = (free_port(), free_port());
+        let mut server = spawn_mediamtx(
+            &mtx,
+            "keys",
+            &format!("rtmp: yes\nrtmpAddress: 127.0.0.1:{rtmp}\napi: yes\napiAddress: 127.0.0.1:{api}\npaths:\n  live/good_key:\n"),
+        );
+        let t0 = Instant::now();
+        while mtx_api(api, "/v3/paths/list").is_err() {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "mediamtx API never came up"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let run = |key: &str, secs: u64| {
+            let cfg = OutputConfig {
+                rtmp_url: format!("rtmp://127.0.0.1:{rtmp}/live"),
+                width: 320,
+                height: 180,
+                fps: 30,
+                video_kbps: 600,
+                retry_sec: 1,
+                retry_max: 2,
+                ..Default::default()
+            };
+            let mut o = Output::new(cfg, String::new());
+            o.set_key(key, false).expect("set key");
+            o.push_frame(moving_frame(0));
+            o.start_live().expect("start live");
+            let mut ev = Vec::new();
+            let t0 = Instant::now();
+            let mut i = 0;
+            while t0.elapsed() < Duration::from_secs(secs) {
+                o.push_frame(moving_frame(i));
+                i += 1;
+                ev.extend(o.tick());
+                std::thread::sleep(Duration::from_millis(33));
+            }
+            (o, ev)
+        };
+
+        // Right key: the server has the path, ready, with video.
+        let (mut o, ev) = run("good_key", 3);
+        let body = mtx_api(api, "/v3/paths/get/live/good_key").unwrap_or_else(|c| {
+            panic!("live/good_key not on the server (HTTP {c}); app events: {ev:?}")
+        });
+        let j: serde_json::Value = serde_json::from_str(&body).expect("API JSON");
+        assert_eq!(j["ready"], true, "{body}");
+        assert!(
+            j["tracks"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|t| t == "H264")),
+            "no H264 track: {body}"
+        );
+        assert!(j["bytesReceived"].as_u64().unwrap_or(0) > 0, "{body}");
+        let p = probe(&ff, &format!("rtmp://127.0.0.1:{rtmp}/live/good_key")).expect("ffprobe");
+        assert!(
+            p.contains("codec_name=h264") && p.contains("width=320") && p.contains("height=180"),
+            "read-back failed: {p}"
+        );
+        assert!(
+            o.is_live() && o.status().error.is_none(),
+            "{:?} {ev:?}",
+            o.status()
+        );
+        assert!(
+            ev.iter()
+                .all(|(k, _)| *k == ToastKind::Info || *k == ToastKind::Success),
+            "{ev:?}"
+        );
+        o.stop_live().expect("stop live");
+
+        // Wrong key: the server refuses the path and the app says so.
+        let (mut o, ev) = run("wrong_key", 5);
+        assert_eq!(
+            mtx_api(api, "/v3/paths/get/live/wrong_key"),
+            Err(404),
+            "server accepted a wrong key"
+        );
+        let list = mtx_api(api, "/v3/paths/list").expect("paths list");
+        assert!(!list.contains("wrong_key"), "{list}");
+        assert!(
+            ev.iter()
+                .any(|(k, m)| *k == ToastKind::Warn && m.starts_with("Stream dropped")),
+            "a rejected key must surface: {ev:?}"
+        );
+        assert!(o.status().error.is_some(), "{:?}", o.status());
+        assert!(
+            ev.iter()
+                .all(|(_, m)| !m.contains("good_key") && !m.contains("wrong_key")),
+            "key leaked into a message: {ev:?}"
+        );
+        let _ = o.stop_live();
+        let _ = server.kill();
+        let _ = server.wait();
     }
 
     /// Streams to a local mediamtx RTMP server, confirms receipt with
     /// ffprobe, then kills the server and checks that the app reconnects
     /// with backoff once it is back.
     #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "mediamtx is installed on the Linux runner only"
+    )]
     fn streams_to_local_rtmp_and_reconnects_with_backoff() {
-        let (Ok(ff), Some(mtx)) = (find_ffmpeg(), mediamtx_bin()) else {
-            eprintln!("skipped: needs ffmpeg and mediamtx");
-            return;
-        };
+        let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
+        let mtx = mediamtx_bin()
+            .expect("mediamtx not found: set MEDIAMTX or install it at ~/opt/mediamtx/mediamtx");
         let port = 19350 + (std::process::id() % 500) as u16;
         let mut server = start_mediamtx(&mtx, port);
         let cfg = OutputConfig {
@@ -1983,5 +2296,208 @@ mod tests {
         assert!(!o.is_live());
         let _ = server.kill();
         let _ = server.wait();
+    }
+
+    /// Goes through Output::start_record → Session::spawn → build_args, the
+    /// path the Record button uses. ffmpeg is a path that doesn't exist, so
+    /// nothing runs: if the refusal were missing, spawning would fail with
+    /// "could not start ffmpeg" instead of the device message.
+    #[test]
+    fn record_refuses_capture_audio_without_a_usable_device() {
+        let cfg = OutputConfig {
+            audio: Audio::Device,
+            ..Default::default()
+        };
+        let start = |backend: AudioBackend, device: &str| {
+            let mut o = Output::new(
+                OutputConfig {
+                    audio_device: device.into(),
+                    ..cfg.clone()
+                },
+                String::new(),
+            );
+            o.ffmpeg = Some(PathBuf::from("/nonexistent/seraphina-test-ffmpeg"));
+            o.audio_backend = backend;
+            let r = o.start_record(Some(std::env::temp_dir().join("seraphina_never.mp4")));
+            assert!(o.rec.is_none());
+            r
+        };
+        let e = start(AudioBackend::DirectShow, "  ").unwrap_err();
+        assert!(e.contains("no DirectShow device is named"), "{e}");
+        let e = start(AudioBackend::Unsupported, "x").unwrap_err();
+        assert!(e.contains("isn't supported on this OS"), "{e}");
+        // A named device and Pulse's `default` get as far as starting ffmpeg.
+        for (b, d) in [(AudioBackend::DirectShow, "Mic"), (AudioBackend::Pulse, "")] {
+            let e = start(b, d).unwrap_err();
+            assert!(e.starts_with("could not start ffmpeg"), "{b:?}: {e}");
+        }
+        assert_eq!(
+            AudioBackend::host(),
+            if cfg!(windows) {
+                AudioBackend::DirectShow
+            } else if cfg!(target_os = "linux") {
+                AudioBackend::Pulse
+            } else {
+                AudioBackend::Unsupported
+            }
+        );
+    }
+
+    fn pactl(args: &[&str]) -> std::process::Output {
+        Command::new("pactl")
+            .args(args)
+            .output()
+            .expect("pactl not found: install pulseaudio-utils")
+    }
+
+    /// Fraction of the audio track's energy at `hz` (Goertzel on mono
+    /// 48 kHz PCM decoded by ffmpeg; needs at least 2 s). A pure tone at `hz` gives about 1.0;
+    /// silence or any other tone gives about 0.
+    fn energy_share_at(ff: &Path, file: &Path, hz: f64) -> f64 {
+        let o = Command::new(ff)
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(file)
+            .args([
+                "-map", "0:a", "-ac", "1", "-ar", "48000", "-f", "s16le", "-",
+            ])
+            .output()
+            .expect("decode audio with ffmpeg");
+        let x: Vec<f64> = o
+            .stdout
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f64::from(i16::from_le_bytes(*b)))
+            .collect();
+        assert!(
+            x.len() >= 2 * 48_000,
+            "3 s recorded but only {:.2} s of audio decoded",
+            x.len() as f64 / 48_000.0
+        );
+        let c = 2.0 * (2.0 * std::f64::consts::PI * hz / 48_000.0).cos();
+        let (mut s1, mut s2) = (0.0, 0.0);
+        for &v in &x {
+            let s0 = v + c * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        let power = s1 * s1 + s2 * s2 - c * s1 * s2;
+        let total: f64 = x.iter().map(|v| v * v).sum();
+        if total == 0.0 {
+            return 0.0;
+        }
+        2.0 * power / (x.len() as f64 * total)
+    }
+
+    /// Records with Audio = Capture device from a real PulseAudio source and
+    /// checks the AAC track carries the signal played into it. The source is
+    /// the monitor of a null sink this test creates; a 1234 Hz tone is played
+    /// into the sink with paplay, i.e. through the audio server, never by
+    /// the app. The recording must carry that tone: a silent or synthetic
+    /// stand-in track has almost no energy at 1234 Hz. Fails without a
+    /// PulseAudio server.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "PulseAudio capture is the Linux path; DirectShow needs a real Windows device"
+    )]
+    fn records_audio_from_a_real_pulse_source() {
+        let ff = find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
+        assert!(
+            pactl(&["info"]).status.success(),
+            "needs a running PulseAudio server (pulseaudio --start)"
+        );
+        let sink = format!("seraphina_mic_test_{}", std::process::id());
+        let m = pactl(&[
+            "load-module",
+            "module-null-sink",
+            &format!("sink_name={sink}"),
+        ]);
+        assert!(m.status.success(), "load null sink: {m:?}");
+        let module = String::from_utf8_lossy(&m.stdout).trim().to_string();
+        let dir = std::env::temp_dir().join(format!("seraphina_mic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let tone = dir.join("tone.wav");
+        assert!(Command::new(&ff)
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("sine=frequency=1234:sample_rate=48000:duration=8")
+            .arg("-y")
+            .arg(&tone)
+            .status()
+            .is_ok_and(|s| s.success()));
+        let mut play = Command::new("paplay")
+            .arg(format!("--device={sink}"))
+            .arg(&tone)
+            .spawn()
+            .expect("paplay not found: install pulseaudio-utils");
+        let cfg = OutputConfig {
+            width: 320,
+            height: 180,
+            audio: Audio::Device,
+            audio_device: format!("{sink}.monitor"),
+            ..Default::default()
+        };
+        let mut o = Output::new(cfg, String::new());
+        let path = dir.join("mic.mp4");
+        o.start_record(Some(path.clone())).expect("start record");
+        let mut ev = Vec::new();
+        let t0 = Instant::now();
+        let mut i = 0;
+        while t0.elapsed() < Duration::from_secs(3) {
+            o.push_frame(moving_frame(i));
+            i += 1;
+            ev.extend(o.tick());
+            std::thread::sleep(Duration::from_millis(33));
+        }
+        let msg = o.stop_record().expect("stop record");
+        let _ = play.kill();
+        let _ = play.wait();
+        let _ = pactl(&["unload-module", &module]);
+        assert!(msg.contains("saved"), "{msg} {ev:?}");
+        assert!(ev.iter().all(|(k, _)| *k != ToastKind::Error), "{ev:?}");
+        let p = probe(&ff, &path.to_string_lossy()).expect("ffprobe");
+        assert!(p.contains("codec_name=aac"), "no audio track: {p}");
+        let share = energy_share_at(&ff, &path, 1234.0);
+        assert!(
+            share > 0.5,
+            "only {share:.3} of the captured energy is the 1234 Hz tone played into the source"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A capture device that doesn't exist must fail loudly: an error
+    /// toast and a status error, not a recording with a stand-in track.
+    #[test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "PulseAudio capture is the Linux path; DirectShow needs a real Windows device"
+    )]
+    fn a_missing_audio_device_fails_loudly() {
+        find_ffmpeg().expect("ffmpeg not found: install it or set SERAPHINA_FFMPEG");
+        let cfg = OutputConfig {
+            width: 320,
+            height: 180,
+            audio: Audio::Device,
+            audio_device: "seraphina_no_such_source".into(),
+            ..Default::default()
+        };
+        let mut o = Output::new(cfg, String::new());
+        let path = std::env::temp_dir().join(format!("seraphina_nomic_{}.mp4", std::process::id()));
+        o.start_record(Some(path.clone())).expect("ffmpeg starts");
+        let mut ev = Vec::new();
+        let t0 = Instant::now();
+        while o.rec.is_some() && t0.elapsed() < Duration::from_secs(8) {
+            o.push_frame(moving_frame(0));
+            ev.extend(o.tick());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(o.rec.is_none(), "recording kept running without its device");
+        assert!(
+            ev.iter()
+                .any(|(k, m)| *k == ToastKind::Error && m.starts_with("Recording stopped")),
+            "{ev:?}"
+        );
+        assert!(o.status().error.is_some(), "{:?}", o.status());
+        let _ = std::fs::remove_file(&path);
     }
 }

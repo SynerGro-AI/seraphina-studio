@@ -75,6 +75,10 @@ impl Joint {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
@@ -99,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut a = Joint::new();
         a.add_root("r", 0.0, 0.0, 0.0);
         let mut b = Joint::new();

@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut m = Material::new("paint").unwrap();
         m.set_roughness(0.2);
         m.set_metallic(1.0);

@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn differential() {
+    fn hand_checked_values() {
         let mut r = MaterialRegistry::new();
         r.add("paint").unwrap();
         r.get_mut("paint").unwrap().set_roughness(0.1);

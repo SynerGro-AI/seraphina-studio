@@ -1028,8 +1028,8 @@ impl PaintState {
                 for c in 0..4 {
                     let ch: Vec<u8> = (0..n).map(|k| after.data[k * 4 + c]).collect();
                     let b = blur_mask(&ch, w, h, r);
-                    for k in 0..n {
-                        after.data[k * 4 + c] = b[k];
+                    for (k, v) in b.iter().enumerate().take(n) {
+                        after.data[k * 4 + c] = *v;
                     }
                 }
                 format!("Gaussian blur {} px", r)

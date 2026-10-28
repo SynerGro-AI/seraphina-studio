@@ -643,6 +643,54 @@ pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
 mod tests {
     use super::*;
 
+    /// The number of AI tools. README.md and docs/AI_TOOLS.md must agree.
+    const TOOL_COUNT: usize = 101;
+
+    /// docs/AI_TOOLS.md, generated from tool_specs().
+    fn ai_tools_markdown() -> String {
+        let specs = tool_specs();
+        let mut md = format!(
+            "# AI tools\n\nGenerated from `tool_specs()` in `src/bin/ui/commands.rs`; \
+             `cargo test --features ui --bin ui ai_tools_doc` checks it. \
+             Regenerate with `cargo test --features ui --bin ui -- --ignored \
+             regenerate_ai_tools_doc`.\n\n{} tools.\n\n| Tool | What it does |\n|------|--------------|\n",
+            specs.len()
+        );
+        for t in &specs {
+            md.push_str(&format!(
+                "| `{}` | {} |\n",
+                t.name,
+                t.description.replace('|', "\\|")
+            ));
+        }
+        md
+    }
+
+    #[test]
+    fn ai_tools_doc_and_readme_match_the_code() {
+        let specs = tool_specs();
+        let mut names: Vec<_> = specs.iter().map(|t| t.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), specs.len(), "duplicate tool names");
+        assert_eq!(
+            include_str!("../../../docs/AI_TOOLS.md"),
+            ai_tools_markdown(),
+            "docs/AI_TOOLS.md is stale: run the regenerate_ai_tools_doc test"
+        );
+        let claim = format!("The {} commands are exposed", specs.len());
+        assert!(
+            include_str!("../../../README.md").contains(&claim),
+            "README.md must say \"{claim}\""
+        );
+    }
+
+    #[test]
+    #[ignore = "tool, not a test: rewrites docs/AI_TOOLS.md"]
+    fn regenerate_ai_tools_doc() {
+        std::fs::write("docs/AI_TOOLS.md", ai_tools_markdown()).expect("write docs/AI_TOOLS.md");
+    }
+
     fn sample_value(schema: &Value) -> Value {
         match schema.get("type").and_then(|t| t.as_str()) {
             Some("string") => schema
@@ -668,7 +716,7 @@ mod tests {
     #[test]
     fn every_tool_spec_parses_into_a_command() {
         let specs = tool_specs();
-        assert!(specs.len() >= 60, "{}", specs.len());
+        assert_eq!(specs.len(), TOOL_COUNT);
         for t in &specs {
             let props = t
                 .params
@@ -767,6 +815,9 @@ mod tests {
         assert!(AppCommand::Undo.mutates());
         assert_eq!(parse_hex("#ff8000"), Some([255, 128, 0]));
         assert_eq!(parse_hex("nope"), None);
-        assert!(tools_json().as_array().map(|a| a.len()).unwrap_or(0) >= 60);
+        assert_eq!(
+            tools_json().as_array().map(|a| a.len()).unwrap_or(0),
+            TOOL_COUNT
+        );
     }
 }

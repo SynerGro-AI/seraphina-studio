@@ -1,166 +1,150 @@
-# Full tool plan: Photoshop + After Effects + Maya → pure Rust
+# Tool plan: Photoshop + After Effects + Maya → pure Rust
 
-Goal: every capability of Photoshop, Adobe After Effects, and Maya that can be expressed as pure data/frame/math operations is added as a pure Rust module. Platform or GPU pieces come only when no pure path exists.
+Goal: every capability of Photoshop, Adobe After Effects, and Maya that can be expressed as pure data/frame/math operations becomes a pure Rust module. Platform or GPU pieces come only when no pure path exists.
+
+`[x]` means the feature is in the library (see the module list in
+README.md) or in the app (`src/bin/ui`) and has a test. `[ ]` is
+planned and not built yet (targets: M7+, one mode per milestone; see
+README "Planned (not built)").
 
 ## Photoshop
 
 ### Adjustments
 - [x] Levels
 - [x] Curves
-- [x] Color balance
-- [x] Hue/saturation
-- [x] Brightness/contrast
-- [x] Exposure
-- [x] Vibrance
-- [x] Black & white
-- [x] Photo filter
-- [x] Channel mixer
-- [x] Selective color
+- [ ] Color balance
+- [ ] Hue/saturation
+- [ ] Brightness/contrast
+- [ ] Exposure
 - [x] Invert
-- [x] Posterize
-- [x] Threshold
-- [x] Gradient map
+- [ ] Posterize
+- [ ] Threshold
+- [ ] Vibrance
+- [x] Black & white (grayscale filter)
+- [ ] Photo filter
+- [ ] Channel mixer
+- [ ] Selective color
+- [ ] Gradient map
 
 ### Filters
-- [x] Box blur
-- [x] Sharpen
+- [ ] Box blur
 - [x] Gaussian blur
-- [x] Motion blur
-- [x] Radial blur
-- [x] Add noise
-- [x] Median
-- [x] Emboss
-- [x] Find edges
-- [x] High pass
+- [ ] Sharpen
+- [ ] Add noise
+- [ ] Motion blur
+- [ ] Radial blur
+- [ ] Median
+- [ ] Emboss
+- [ ] Find edges
+- [ ] High pass
 
 ### Layer styles
-- [x] Drop shadow (dark)
-- [x] Bright shadow
-- [x] Inner glow
-- [x] Outer glow
-- [x] Bevel and emboss
-- [x] Stroke
-- [x] Gradient overlay
-- [x] Pattern overlay
-- [x] Satin
+- [ ] Drop shadow
+- [ ] Inner glow
+- [ ] Outer glow
+- [ ] Bevel and emboss
+- [ ] Stroke
+- [ ] Gradient overlay
+- [ ] Pattern overlay
+- [ ] Satin
 
 ### Selections
-- [x] Rectangular / elliptical marquee
-- [x] Lasso
+- [x] Rectangular marquee
+- [x] Lasso / polygon
 - [x] Magic wand (tolerance)
-- [x] Quick select / smart select
 - [x] Invert selection
-- [x] Feather
-- [x] Expand / contract
-- [x] Save / load selection
+- [ ] Expand / contract
+- [ ] Save / load selection
 
 ### Layers
 - [x] Layer stack
 - [x] Hide / show
-- [x] Opacity
+- [x] Opacity and fill
 - [x] Blend modes
 - [x] Layer mask
-- [x] Clipping mask
 - [x] Group
+- [ ] Clipping mask
 
 ### Tools
 - [x] Brush / eraser
 - [x] Clone stamp
-- [x] Healing
-- [x] Dodge / burn / sponge
+- [x] Healing (spot heal)
+- [x] Dodge / burn
 - [x] Gradient
-- [x] Paint bucket
 - [x] Text
-- [x] Shape
+- [x] Pen (to stroke or selection)
 - [x] Crop
-- [x] Transform (scale, rotate, skew, warp)
 - [x] Zoom in / out
 - [x] Hand / pan
+- [ ] Sponge
+- [ ] Shape
+- [ ] Free transform (scale, rotate, skew, warp)
 
 ## After Effects
 
 ### Core
 - [x] Timeline / clips
 - [x] Compositor
-- [x] Keyframes
-- [x] Parenting
-- [x] Nulls
-- [x] Expressions (pure math)
+- [x] Keyframes (opacity over time)
+- [ ] Parenting
+- [ ] Nulls
+- [ ] Expressions
 
-### Effects categories
-- [x] Color correction (curves, color balance, levels — shared with Photoshop)
-- [x] Blur & sharpen (shared)
-- [x] Distort (wave, bulge, twirl)
-- [x] Generate (gradient, grid, lens flare)
-- [x] Keying (chroma, luma)
-- [x] Matte (track matte, set matte)
-- [x] Noise & grain
-- [x] Stylize (glow, find edges)
-- [x] Time (echo, posterize time)
-- [x] Transition (fade, wipe — partial)
-- [x] 3D channel (depth, fog)
-- [x] Audio (shared with existing filters)
+### Effects
+- [ ] Color correction (Paint has levels, curves, grayscale, invert; Composite has none yet)
+- [ ] Blur & sharpen
+- [ ] Distort (wave, bulge, twirl)
+- [ ] Generate (gradient, grid, lens flare)
+- [ ] Keying (chroma, luma)
+- [ ] Matte (track matte, set matte)
+- [ ] Noise & grain
+- [ ] Stylize (glow, find edges)
+- [ ] Time (echo, posterize time)
+- [ ] Transitions (fade, wipe)
+- [ ] 3D channel (depth, fog)
 
 ### 3D
-- [x] 3D layers
-- [x] Camera
-- [x] Lights
+- [ ] 3D layers
+- [ ] Camera
+- [ ] Lights
 
 ## Maya
 
 ### Modeling
-- [x] Polygon mesh (verts, edges, faces)
-- [x] Extrude, bevel, bridge
-- [x] NURBS curve / surface
-- [x] Subdivision
+- [x] Polygon mesh (cube, plane, cylinder)
+- [x] Extrude, bevel, bridge, edge loop, multi-cut, quad draw
+- [x] Booleans (union, difference, intersection)
+- [ ] NURBS curve / surface
+- [ ] Subdivision
 
 ### Rigging
 - [x] Joint hierarchy
-- [x] IK / FK
-- [x] Constraints
-- [x] Skinning weights
+- [ ] IK / FK
+- [ ] Constraints
+- [ ] Skinning weights
 
 ### Animation
-- [x] Keyframes / timeline (partial)
-- [x] Graph editor (curves)
-- [x] Motion paths
-- [x] Blend shapes
+- [x] Set / delete key, play
+- [ ] Graph editor
+- [ ] Motion paths
+- [ ] Blend shapes
 
 ### Dynamics
-- [x] Particles
-- [x] Rigid body
-- [x] Soft body / cloth
-- [x] Fluids (later)
+- [x] Rigid bodies (the Physics Arena)
+- [ ] Particles
+- [ ] Soft body / cloth
+- [ ] Fluids
 
 ### Look / render
-- [x] Materials (partial)
-- [x] Lights (partial)
-- [x] Shaders (Lambert, Phong, PBR)
-- [x] UV mapping
-- [x] Camera (perspective, orthographic)
+- [x] Materials (Materials mode)
+- [x] Shading: flat Lambert and Blinn-Phong
+- [x] Lights and cameras as scene objects
+- [x] Perspective view
+- [ ] UV mapping
+- [ ] Orthographic view
 
 ## Live weights
 
-AI writes a suggestion into LiveWeights once via WeightBridge.
-Later frames read the weight. No new AI call is needed to re-apply
-the same curve, balance, or effect.
-
-Covered: glow, outer glow, shadow, bright, sharpen, hue/sat,
-exposure, threshold, gauss, motion, noise, emboss, bevel, stroke,
-gradient, pattern.
-
-Also linked: light intensity, physics gravity/friction/mass,
-bone translation. AI writes once; the scene reads.
-
-1. Curves, blend modes, color balance (this step)
-2. Selection (rect, invert, magic wand) + layer stack with hide/mask
-3. Remaining adjustments (hue/sat, exposure, invert, threshold)
-4. Remaining filters (gaussian, motion, noise, emboss)
-5. Remaining layer styles (bevel, stroke, gradient)
-6. Tools (brush, clone, transform, zoom)
-7. AE distort / generate / keying
-8. Maya mesh + joint + skinning
-9. Dynamics (particles, rigid)
-10. Full 3D camera / lights / shaders
-
-Each item is a pure module with a differential test, then wired into the library.
+`live_weights` is a store of named float weights that can change
+between frames; the terminal demo pipeline reads it each frame.
+Planned: letting the AI set a weight once instead of on every frame.
