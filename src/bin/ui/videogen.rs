@@ -10,12 +10,31 @@
 //! POST `/v1/images/generations` for Paint's "Generate layer".
 
 use crate::commands::AppCommand;
+use crate::net::{self, Cancel};
 use crate::theme::{self, Palette, SP_SM};
+use crate::usage::{self, Usage};
 use eframe::egui;
 use egui_phosphor::regular as ic;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
+use std::time::Duration;
+
+/// Read timeout for Imagine API calls and downloads.
+const API_TIMEOUT: Duration = Duration::from_secs(60);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Seconds between status polls, and how many polls before giving up.
+const POLL_EVERY: Duration = Duration::from_secs(5);
+const POLLS: u32 = 180;
+/// Consecutive failed polls tolerated before a clip is marked failed.
+const POLL_FAILURES: u32 = 3;
+/// Length of an extension.
+const EXTEND_SECONDS: u32 = 6;
+
+/// Shown when the user stops a job.
+pub const STOPPED_NOTE: &str =
+    "stopped by you (a job xAI had already accepted may still finish and be billed)";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum JobStatus {
@@ -26,9 +45,25 @@ pub enum JobStatus {
 
 pub trait VideoGenProvider: Send + Sync {
     fn name(&self) -> String;
-    fn start_generate(&self, prompt: &str, duration: u32) -> Result<String, String>;
-    fn start_extend(&self, video_url: &str, prompt: &str) -> Result<String, String>;
-    fn poll(&self, request_id: &str) -> Result<JobStatus, String>;
+    /// Submit a job. Only "not accepted" failures (429/503, no
+    /// connection) are retried, so a retry can't start a second paid job.
+    fn start_generate(
+        &self,
+        prompt: &str,
+        duration: u32,
+        cancel: &AtomicBool,
+    ) -> Result<String, String>;
+    fn start_extend(
+        &self,
+        video_url: &str,
+        prompt: &str,
+        cancel: &AtomicBool,
+    ) -> Result<String, String>;
+    fn poll(&self, request_id: &str, cancel: &AtomicBool) -> Result<JobStatus, String>;
+    /// About what a job of this many seconds costs.
+    fn estimate(&self, _seconds: u32) -> Usage {
+        Usage::default()
+    }
 }
 
 pub struct GrokImagine {
@@ -100,9 +135,25 @@ impl GrokImagine {
     pub const DEFAULT_MODEL: &'static str = "grok-imagine-video-1.5";
     pub const DEFAULT_IMAGE_MODEL: &'static str = "grok-imagine-image-2.0";
 
-    /// Text-to-image; returns encoded image bytes (PNG/JPEG).
-    pub fn generate_image(&self, prompt: &str) -> Result<Vec<u8>, String> {
-        let v = self.post("/images/generations", json!({ "model": self.image_model, "prompt": prompt, "n": 1, "response_format": "b64_json" }))?;
+    /// Text-to-image; returns encoded image bytes (PNG/JPEG) and what
+    /// the call cost.
+    pub fn generate_image(
+        &self,
+        prompt: &str,
+        cancel: &AtomicBool,
+    ) -> Result<(Vec<u8>, Usage), String> {
+        let v = self.post(
+            "/images/generations",
+            json!({ "model": self.image_model, "prompt": prompt, "n": 1, "response_format": "b64_json" }),
+            cancel,
+        )?;
+        let cost = usage::parse_usage(&v)
+            .filter(|u| !u.estimated)
+            .unwrap_or_else(|| usage::image_estimate(&self.image_model));
+        self.image_bytes(&v, cancel).map(|b| (b, cost))
+    }
+
+    fn image_bytes(&self, v: &Value, cancel: &AtomicBool) -> Result<Vec<u8>, String> {
         let d = v.pointer("/data/0").ok_or_else(|| {
             format!(
                 "no image in response: {}",
@@ -116,20 +167,46 @@ impl GrokImagine {
             .get("url")
             .and_then(|u| u.as_str())
             .ok_or("image response had neither b64_json nor url")?;
-        let r = ureq::get(url).call().map_err(|e| e.to_string())?;
+        let a = net::agent(DOWNLOAD_TIMEOUT);
+        let r = net::with_retry(
+            cancel,
+            net::Policy::Transient,
+            || a.get(url),
+            None,
+            &mut |_, _, _| {},
+        )
+        .map_err(fail_text)?;
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut r.into_reader(), &mut buf).map_err(|e| e.to_string())?;
         Ok(buf)
     }
 
-    fn post(&self, path: &str, body: Value) -> Result<Value, String> {
-        ureq::post(&format!("{}{}", self.base, path))
-            .set("Authorization", &format!("Bearer {}", self.key))
-            .set("Content-Type", "application/json")
-            .send_string(&body.to_string())
-            .map_err(http_err)?
-            .into_json()
-            .map_err(|e| e.to_string())
+    fn post(&self, path: &str, body: Value, cancel: &AtomicBool) -> Result<Value, String> {
+        let url = format!("{}{}", self.base, path);
+        net::key_allowed(&url)?;
+        let a = net::agent(API_TIMEOUT);
+        let payload = body.to_string();
+        net::with_retry(
+            cancel,
+            net::Policy::NotAccepted,
+            || {
+                a.post(&url)
+                    .set("Authorization", &format!("Bearer {}", self.key))
+                    .set("Content-Type", "application/json")
+            },
+            Some(&payload),
+            &mut |_, _, _| {},
+        )
+        .map_err(fail_text)?
+        .into_json()
+        .map_err(|e| e.to_string())
+    }
+}
+
+fn fail_text(f: net::Failure) -> String {
+    match f {
+        net::Failure::Stopped => net::STOPPED.into(),
+        net::Failure::Http(e) => http_err(*e),
     }
 }
 
@@ -198,29 +275,61 @@ impl VideoGenProvider for GrokImagine {
         format!("Grok Imagine · {} · {}", self.model, self.resolution)
     }
 
-    fn start_generate(&self, prompt: &str, duration: u32) -> Result<String, String> {
-        let v = self.post("/videos/generations", json!({ "model": self.model, "prompt": prompt, "duration": duration.clamp(1, 15), "aspect_ratio": "16:9", "resolution": self.resolution }))?;
+    fn start_generate(
+        &self,
+        prompt: &str,
+        duration: u32,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
+        let v = self.post(
+            "/videos/generations",
+            json!({ "model": self.model, "prompt": prompt, "duration": duration.clamp(1, 15), "aspect_ratio": "16:9", "resolution": self.resolution }),
+            cancel,
+        )?;
         v.get("request_id")
             .and_then(|r| r.as_str())
             .map(String::from)
             .ok_or_else(|| format!("no request_id in {}", v))
     }
 
-    fn start_extend(&self, video_url: &str, prompt: &str) -> Result<String, String> {
-        let v = self.post("/videos/extensions", json!({ "model": self.model, "prompt": prompt, "video": { "url": video_url }, "duration": 6 }))?;
+    fn start_extend(
+        &self,
+        video_url: &str,
+        prompt: &str,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
+        let v = self.post(
+            "/videos/extensions",
+            json!({ "model": self.model, "prompt": prompt, "video": { "url": video_url }, "duration": EXTEND_SECONDS }),
+            cancel,
+        )?;
         v.get("request_id")
             .and_then(|r| r.as_str())
             .map(String::from)
             .ok_or_else(|| format!("no request_id in {}", v))
     }
 
-    fn poll(&self, id: &str) -> Result<JobStatus, String> {
-        let v: Value = ureq::get(&format!("{}/videos/{}", self.base, id))
-            .set("Authorization", &format!("Bearer {}", self.key))
-            .call()
-            .map_err(http_err)?
-            .into_json()
-            .map_err(|e| e.to_string())?;
+    fn estimate(&self, seconds: u32) -> Usage {
+        usage::video_estimate(&self.model, &self.resolution, seconds)
+    }
+
+    fn poll(&self, id: &str, cancel: &AtomicBool) -> Result<JobStatus, String> {
+        let url = format!("{}/videos/{}", self.base, id);
+        net::key_allowed(&url)?;
+        let a = net::agent(API_TIMEOUT);
+        let v: Value = net::with_retry(
+            cancel,
+            net::Policy::Transient,
+            || {
+                a.get(&url)
+                    .set("Authorization", &format!("Bearer {}", self.key))
+            },
+            None,
+            &mut |_, _, _| {},
+        )
+        .map_err(fail_text)?
+        .into_json()
+        .map_err(|e| e.to_string())?;
         Ok(parse_status(&v))
     }
 }
@@ -231,7 +340,14 @@ pub struct Clip {
     pub local: Option<PathBuf>,
     pub selected: bool,
     rx: Option<Receiver<(JobStatus, Option<PathBuf>)>>,
+    cancel: Cancel,
 }
+
+/// A finished image job: (prompt, encoded bytes) or an error.
+type ImageResult = Result<(String, Vec<u8>), String>;
+/// Submits a job and returns its request id.
+type StartJob =
+    Box<dyn FnOnce(&dyn VideoGenProvider, &AtomicBool) -> Result<String, String> + Send>;
 
 pub struct VideoGenPanel {
     pub provider: Option<std::sync::Arc<dyn VideoGenProvider>>,
@@ -241,9 +357,16 @@ pub struct VideoGenPanel {
     pub extend_prompt: String,
     pub log: Vec<String>,
     pub imager: Option<std::sync::Arc<GrokImagine>>,
-    image_rx: Option<Receiver<Result<(String, Vec<u8>), String>>>,
+    image_rx: Option<Receiver<ImageResult>>,
+    image_cancel: Cancel,
     /// Running ffmpeg concat (D5: off the UI thread).
     stitch_rx: Option<Receiver<Result<String, String>>>,
+    /// Time between status polls (tests shorten it).
+    pub poll_every: Duration,
+    /// Costs of accepted jobs; the app drains `spent` into its meter.
+    spent_tx: std::sync::mpsc::Sender<Usage>,
+    spent_rx: Receiver<Usage>,
+    pub spent: Vec<Usage>,
 }
 
 pub fn videos_dir() -> PathBuf {
@@ -307,21 +430,9 @@ fn run_concat(list: &std::path::Path, out: &std::path::Path, n: usize) -> Result
 
 impl VideoGenPanel {
     pub fn new() -> Self {
-        let imager = GrokImagine::from_env().map(std::sync::Arc::new);
-        let provider = imager
-            .clone()
-            .map(|g| g as std::sync::Arc<dyn VideoGenProvider>);
-        Self {
-            provider,
-            prompt: String::new(),
-            duration: 6,
-            clips: Vec::new(),
-            extend_prompt: String::new(),
-            log: Vec::new(),
-            imager,
-            image_rx: None,
-            stitch_rx: None,
-        }
+        let mut s = Self::unconfigured();
+        s.reload_provider();
+        s
     }
 
     /// Pick up a key saved in Settings without losing clips.
@@ -334,6 +445,7 @@ impl VideoGenPanel {
     }
 
     pub fn unconfigured() -> Self {
+        let (spent_tx, spent_rx) = channel();
         Self {
             provider: None,
             prompt: String::new(),
@@ -343,7 +455,12 @@ impl VideoGenPanel {
             log: Vec::new(),
             imager: None,
             image_rx: None,
+            image_cancel: net::cancel_flag(),
             stitch_rx: None,
+            poll_every: POLL_EVERY,
+            spent_tx,
+            spent_rx,
+            spent: Vec::new(),
         }
     }
 
@@ -365,8 +482,15 @@ impl VideoGenPanel {
         let (tx, rx) = channel();
         let pr = prompt.trim().to_string();
         let p2 = pr.clone();
+        let cancel = net::cancel_flag();
+        self.image_cancel = cancel.clone();
+        let spent = self.spent_tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(g.generate_image(&p2).map(|b| (p2, b)));
+            let r = g.generate_image(&p2, &cancel).map(|(b, u)| {
+                let _ = spent.send(u);
+                (p2, b)
+            });
+            let _ = tx.send(r);
         });
         self.image_rx = Some(rx);
         Ok(format!(
@@ -379,34 +503,102 @@ impl VideoGenPanel {
         ))
     }
 
-    pub fn take_image(&mut self) -> Option<Result<(String, Vec<u8>), String>> {
+    /// About what generating a clip would cost (USD), for the spend cap.
+    pub fn video_cost(&self, duration: Option<u32>) -> f64 {
+        let d = duration.unwrap_or(self.duration).clamp(1, 15);
+        self.provider
+            .as_ref()
+            .map(|p| p.estimate(d).usd())
+            .unwrap_or(0.0)
+    }
+
+    pub fn extend_cost(&self) -> f64 {
+        self.provider
+            .as_ref()
+            .map(|p| p.estimate(EXTEND_SECONDS).usd())
+            .unwrap_or(0.0)
+    }
+
+    pub fn image_cost(&self) -> f64 {
+        self.imager
+            .as_ref()
+            .map(|g| usage::image_estimate(&g.image_model).usd())
+            .unwrap_or(0.0)
+    }
+
+    /// Stop button for the image job.
+    pub fn stop_image(&mut self) -> Result<String, String> {
+        if self.image_rx.take().is_none() {
+            return Err("no image is generating".into());
+        }
+        self.image_cancel.store(true, Ordering::Relaxed);
+        self.log.push(format!("image {}", STOPPED_NOTE));
+        Ok(format!("image {}", STOPPED_NOTE))
+    }
+
+    /// Stop button for a clip (1-based).
+    pub fn stop_clip(&mut self, clip: usize) -> Result<String, String> {
+        let c = self
+            .clips
+            .get_mut(clip.saturating_sub(1))
+            .filter(|c| c.rx.is_some())
+            .ok_or_else(|| format!("clip {} isn't generating", clip))?;
+        c.cancel.store(true, Ordering::Relaxed);
+        c.rx = None;
+        c.status = JobStatus::Failed(STOPPED_NOTE.into());
+        Ok(format!("clip {} {}", clip, STOPPED_NOTE))
+    }
+
+    /// Stop every running Imagine job; returns how many were stopped.
+    pub fn stop_all(&mut self) -> usize {
+        let running: Vec<usize> = (1..=self.clips.len())
+            .filter(|i| self.clips[i - 1].rx.is_some())
+            .collect();
+        let mut n = 0;
+        for i in running {
+            n += self.stop_clip(i).is_ok() as usize;
+        }
+        n + self.stop_image().is_ok() as usize
+    }
+
+    pub fn take_image(&mut self) -> Option<ImageResult> {
         let r = self.image_rx.as_ref()?.try_recv().ok()?;
         self.image_rx = None;
         Some(r)
     }
 
-    fn spawn(
-        &mut self,
-        prompt: String,
-        start: Box<dyn FnOnce(&dyn VideoGenProvider) -> Result<String, String> + Send>,
-    ) -> Result<String, String> {
+    fn spawn(&mut self, prompt: String, seconds: u32, start: StartJob) -> Result<String, String> {
         let p = self.provider.clone().ok_or(
             "Grok Imagine isn't configured: add an xAI API key in Settings (or set XAI_API_KEY)",
         )?;
         let (tx, rx) = channel();
         let idx = self.clips.len();
+        let cancel = net::cancel_flag();
+        let stop = cancel.clone();
+        let every = self.poll_every;
+        let spent = self.spent_tx.clone();
         std::thread::spawn(move || {
-            let id = match start(p.as_ref()) {
-                Ok(id) => id,
+            let id = match start(p.as_ref(), &stop) {
+                Ok(id) => {
+                    // accepted: xAI bills it from here, Stop or not
+                    let _ = spent.send(p.estimate(seconds));
+                    id
+                }
                 Err(e) => {
                     let _ = tx.send((JobStatus::Failed(e), None));
                     return;
                 }
             };
-            for _ in 0..180 {
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                match p.poll(&id) {
-                    Ok(JobStatus::Pending) => continue,
+            let mut failures = 0;
+            for _ in 0..POLLS {
+                if !net::sleep_unless(&stop, every) {
+                    return; // Stop: the UI already shows it
+                }
+                match p.poll(&id, &stop) {
+                    Ok(JobStatus::Pending) => {
+                        failures = 0;
+                        continue;
+                    }
                     Ok(JobStatus::Done { url, duration }) => {
                         let dir = videos_dir();
                         let path = dir.join(format!(
@@ -414,9 +606,19 @@ impl VideoGenPanel {
                             idx + 1,
                             id.chars().take(8).collect::<String>()
                         ));
+                        let a = net::agent(DOWNLOAD_TIMEOUT);
                         let saved = std::fs::create_dir_all(&dir)
                             .ok()
-                            .and_then(|_| ureq::get(&url).call().ok())
+                            .and_then(|_| {
+                                net::with_retry(
+                                    &stop,
+                                    net::Policy::Transient,
+                                    || a.get(&url),
+                                    None,
+                                    &mut |_, _, _| {},
+                                )
+                                .ok()
+                            })
                             .and_then(|r| {
                                 let mut f = std::fs::File::create(&path).ok()?;
                                 std::io::copy(&mut r.into_reader(), &mut f).ok()?;
@@ -429,13 +631,25 @@ impl VideoGenPanel {
                         let _ = tx.send((s, None));
                         return;
                     }
+                    Err(_) if stop.load(Ordering::Relaxed) => return,
+                    // The poll already retried transient errors; give a
+                    // flaky network a few more chances before failing.
                     Err(e) => {
-                        let _ = tx.send((JobStatus::Failed(e), None));
-                        return;
+                        failures += 1;
+                        if failures >= POLL_FAILURES {
+                            let _ = tx.send((JobStatus::Failed(e), None));
+                            return;
+                        }
                     }
                 }
             }
-            let _ = tx.send((JobStatus::Failed("timed out after 15 minutes".into()), None));
+            let _ = tx.send((
+                JobStatus::Failed(format!(
+                    "timed out after {} minutes",
+                    (every * POLLS).as_secs() / 60
+                )),
+                None,
+            ));
         });
         self.clips.push(Clip {
             prompt: prompt.clone(),
@@ -443,6 +657,7 @@ impl VideoGenPanel {
             local: None,
             selected: true,
             rx: Some(rx),
+            cancel,
         });
         Ok(format!(
             "queued clip {}: “{}”",
@@ -458,7 +673,7 @@ impl VideoGenPanel {
         let d = duration.unwrap_or(self.duration).clamp(1, 15);
         let pr = prompt.trim().to_string();
         let p2 = pr.clone();
-        self.spawn(pr, Box::new(move |p| p.start_generate(&p2, d)))
+        self.spawn(pr, d, Box::new(move |p, c| p.start_generate(&p2, d, c)))
     }
 
     pub fn extend(&mut self, clip: usize, prompt: &str) -> Result<String, String> {
@@ -470,7 +685,8 @@ impl VideoGenPanel {
         let p2 = prompt.to_string();
         self.spawn(
             format!("extend #{}: {}", clip, prompt),
-            Box::new(move |p| p.start_extend(&url, &p2)),
+            EXTEND_SECONDS,
+            Box::new(move |p, c| p.start_extend(&url, &p2, c)),
         )
     }
 
@@ -548,7 +764,13 @@ impl VideoGenPanel {
         }
     }
 
+    /// Collect costs reported by workers into `spent`.
+    pub fn tick_spent(&mut self) {
+        self.spent.extend(self.spent_rx.try_iter());
+    }
+
     pub fn tick(&mut self) -> bool {
+        self.tick_spent();
         let mut busy = false;
         for c in &mut self.clips {
             if let Some(rx) = &c.rx {
@@ -564,6 +786,8 @@ impl VideoGenPanel {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, p: &Palette, bus: &mut Vec<AppCommand>) {
+        let mut stop_image = false;
+        let mut stop_clip = None;
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(ic::FILM_SLATE)
@@ -621,6 +845,14 @@ impl VideoGenPanel {
                 } else {
                     "Image → layer"
                 };
+                if self.image_rx.is_some()
+                    && ui
+                        .add(theme::stop_button(p, &format!("{} Stop", ic::STOP)))
+                        .on_hover_text("Stop waiting for this image")
+                        .clicked()
+                {
+                    stop_image = true;
+                }
                 if ui
                     .add_enabled(
                         ok && self.image_rx.is_none(),
@@ -668,6 +900,14 @@ impl VideoGenPanel {
                         ),
                     };
                     theme::pill(ui, p, col, &txt);
+                    if c.rx.is_some()
+                        && ui
+                            .add(theme::stop_button(p, &format!("{} Stop", ic::STOP)))
+                            .on_hover_text("Stop waiting for this clip")
+                            .clicked()
+                    {
+                        stop_clip = Some(i + 1);
+                    }
                 });
                 ui.add(egui::Label::new(theme::muted(p, &c.prompt)).wrap());
                 if let JobStatus::Done { url, .. } = &c.status {
@@ -682,6 +922,12 @@ impl VideoGenPanel {
         }
         if let Some(u) = open {
             ui.ctx().open_url(egui::OpenUrl::new_tab(u));
+        }
+        if stop_image {
+            let _ = self.stop_image();
+        }
+        if let Some(i) = stop_clip {
+            let _ = self.stop_clip(i);
         }
         let done: Vec<usize> = self
             .clips
@@ -770,6 +1016,118 @@ mod tests {
             parse_status(&json!({"status":"pending","progress":40})),
             JobStatus::Pending
         );
+    }
+
+    /// A provider whose polls follow a script (Err = network failure).
+    struct Scripted {
+        polls: std::sync::Mutex<Vec<Result<JobStatus, String>>>,
+        count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl VideoGenProvider for Scripted {
+        fn name(&self) -> String {
+            "scripted".into()
+        }
+        fn start_generate(&self, _: &str, _: u32, _: &AtomicBool) -> Result<String, String> {
+            Ok("job".into())
+        }
+        fn start_extend(&self, _: &str, _: &str, _: &AtomicBool) -> Result<String, String> {
+            Ok("job".into())
+        }
+        fn poll(&self, _: &str, _: &AtomicBool) -> Result<JobStatus, String> {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            self.polls
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or(Ok(JobStatus::Pending))
+        }
+    }
+
+    fn scripted(
+        mut polls: Vec<Result<JobStatus, String>>,
+    ) -> (VideoGenPanel, std::sync::Arc<Scripted>) {
+        polls.reverse();
+        let s = std::sync::Arc::new(Scripted {
+            polls: std::sync::Mutex::new(polls),
+            count: Default::default(),
+        });
+        let mut v = VideoGenPanel::unconfigured();
+        v.provider = Some(s.clone());
+        v.poll_every = Duration::from_millis(5);
+        (v, s)
+    }
+
+    fn settle(v: &mut VideoGenPanel) -> JobStatus {
+        for _ in 0..400 {
+            v.tick();
+            if v.clips[0].status != JobStatus::Pending {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        v.clips[0].status.clone()
+    }
+
+    #[test]
+    fn imagine_refuses_plain_http_to_another_host() {
+        let g = GrokImagine {
+            base: "http://192.0.2.1/v1".into(),
+            key: "xai-NOT-A-REAL-KEY-0123456789".into(),
+            model: "m".into(),
+            resolution: "480p".into(),
+            image_model: "i".into(),
+        };
+        let cancel = AtomicBool::new(false);
+        let e = g.start_generate("a cat", 1, &cancel).unwrap_err();
+        assert!(e.contains("unencrypted") && !e.contains("xai-"), "{e}");
+        assert!(g.poll("id", &cancel).unwrap_err().contains("unencrypted"));
+    }
+
+    #[test]
+    fn stop_ends_a_clip_and_its_polling() {
+        let (mut v, s) = scripted(vec![]);
+        v.generate("a cat", Some(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(s.count.load(Ordering::SeqCst) > 0);
+        assert!(v.stop_clip(1).unwrap().contains("may still"));
+        assert!(v.stop_clip(1).is_err(), "already stopped");
+        assert_eq!(v.clips[0].status, JobStatus::Failed(STOPPED_NOTE.into()));
+        std::thread::sleep(Duration::from_millis(40));
+        let n = s.count.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(s.count.load(Ordering::SeqCst), n, "polling stopped");
+        v.tick();
+        assert_eq!(v.clips[0].status, JobStatus::Failed(STOPPED_NOTE.into()));
+        assert_eq!(v.stop_all(), 0);
+    }
+
+    #[test]
+    fn a_flaky_poll_is_tolerated_but_a_dead_one_fails() {
+        let e = || Err::<JobStatus, String>("connection reset".into());
+        let (mut v, _) = scripted(vec![
+            e(),
+            e(),
+            Ok(JobStatus::Pending),
+            Ok(JobStatus::Failed("moderated".into())),
+        ]);
+        v.generate("a cat", Some(1)).unwrap();
+        assert_eq!(settle(&mut v), JobStatus::Failed("moderated".into()));
+        let (mut v, _) = scripted(vec![e(), e(), e(), Ok(JobStatus::Pending)]);
+        v.generate("a cat", Some(1)).unwrap();
+        assert_eq!(settle(&mut v), JobStatus::Failed("connection reset".into()));
+    }
+
+    #[test]
+    fn stopping_an_image_frees_the_button() {
+        let mut v = VideoGenPanel::unconfigured();
+        assert!(v.stop_image().is_err());
+        let (tx, rx) = channel();
+        v.image_rx = Some(rx);
+        assert!(v.stop_image().is_ok());
+        assert!(v.image_cancel.load(Ordering::Relaxed));
+        let _ = tx.send(Ok(("late".into(), vec![1])));
+        assert!(v.take_image().is_none(), "a late image is dropped");
     }
 
     #[test]
@@ -863,8 +1221,12 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let t0 = std::time::Instant::now();
         let img = g
-            .generate_image("A gold gem logo on a near-black background, minimal, crisp")
-            .expect("image");
+            .generate_image(
+                "A gold gem logo on a near-black background, minimal, crisp",
+                &AtomicBool::new(false),
+            )
+            .expect("image")
+            .0;
         let im = image::load_from_memory(&img).expect("decodes");
         std::fs::write(out.join("live_grok_imagine_image.jpg"), &img).unwrap();
         eprintln!(
@@ -879,6 +1241,7 @@ mod tests {
             .start_generate(
                 "Slow golden light sweeping across misty mountain peaks at dusk",
                 1,
+                &AtomicBool::new(false),
             )
             .expect("start");
         eprintln!(
@@ -888,7 +1251,7 @@ mod tests {
         let mut status = JobStatus::Pending;
         for _ in 0..120 {
             std::thread::sleep(std::time::Duration::from_secs(5));
-            status = g.poll(&id).expect("poll");
+            status = g.poll(&id, &AtomicBool::new(false)).expect("poll");
             if status != JobStatus::Pending {
                 break;
             }

@@ -662,6 +662,18 @@ pub fn primary_button(p: &Palette, text: &str) -> egui::Button<'static> {
     .corner_radius(CornerRadius::same(R_SM as u8))
 }
 
+/// Outlined red button for Stop.
+pub fn stop_button(p: &Palette, text: &str) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text.to_string())
+            .color(p.danger)
+            .strong(),
+    )
+    .fill(p.surface_hi)
+    .stroke(Stroke::new(1.0_f32, p.danger))
+    .corner_radius(CornerRadius::same(R_SM as u8))
+}
+
 /// Quiet button that reads as selected when `on`.
 pub fn toggle_button(p: &Palette, text: &str, on: bool) -> egui::Button<'static> {
     let (fill, color) = if on {

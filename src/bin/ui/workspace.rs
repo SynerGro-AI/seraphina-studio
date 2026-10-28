@@ -68,6 +68,9 @@ pub struct Manifest {
     pub output: Option<OutputConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<ChatFile>,
+    /// xAI tokens and cost spent on this project (C3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::usage::Totals>,
 }
 
 /// Work queued by a prompt button, run after the modal closes.
@@ -361,6 +364,7 @@ impl App {
             stream: Some(self.stream.to_file(&mut assets)),
             output: Some(self.output.project_cfg()),
             chat: include_chat.then(|| self.assistant.to_file()),
+            usage: Some(self.meter.project.clone()),
         };
         Container {
             manifest: serde_json::to_value(&m).unwrap_or(Value::Null),
@@ -425,6 +429,7 @@ impl App {
         if let Some(c) = m.chat {
             self.assistant.load_file(c);
         }
+        self.meter.project = m.usage.unwrap_or_default();
         if let Some(u) = m.ui {
             if let Some(mode) = Mode::parse(&u.mode) {
                 self.mode = mode;
@@ -495,6 +500,7 @@ impl App {
         self.comp_hist = History::new();
         self.mat_hist = History::new();
         self.snapshots.clear();
+        self.meter.project = crate::usage::Totals::default();
         self.project.path = None;
         self.project.edits += 1;
         self.mark_saved();
@@ -1376,7 +1382,7 @@ pub(crate) mod tests {
             .items
             .iter()
             .any(|i| i.text == "Make the sky bluer" && matches!(i.kind, ItemKind::User)));
-        assert_eq!(b.assistant.convo_len(), 2);
+        assert_eq!(b.assistant.convo_len(), 1, "one fenced transcript");
 
         let ctx = egui::Context::default();
         let mut a = test_app(&ctx);
